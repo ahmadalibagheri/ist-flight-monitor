@@ -24,27 +24,38 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Cron mails stdout/stderr here. Leave blank to disable mail.
 MAILTO=""
 
-# --- collection every 2 hours -----------------------------------------------
+# --- collection every 8 hours -----------------------------------------------
 # Runs at :07 rather than :00 to stay clear of the top-of-hour rush on the
 # provider's side. Each run collects, aggregates and dispatches alerts.
 #
-# Every 2h with a 24h window costs the same quota as hourly with a 12h window
-# (24 units/day) but covers every departure rather than a 12-hour slice. Flights
-# are still observed ~12 times before departure, which is ample for delay tracking.
-7 */2 * * * /path/to/ist-flight-monitor/scripts/collect.sh
+# Cadence is the lever that pays for extra origins. With two origins and a 24h
+# window each cycle costs 4 API calls, so 8-hourly is 12 units/day (~360/month)
+# and fits the free tier, where 2-hourly would be ~1,440.
+#
+# The cost is delay resolution: a flight is observed about 3 times before it
+# departs instead of 12, so a delay that grows over an afternoon is seen as a
+# couple of steps rather than a curve. Cancellations and final outcomes are
+# unaffected. Keep COLLECTION_INTERVAL_MINUTES and STALE_AFTER_MINUTES in .env in
+# step with this line - the app refuses to start if staleness is shorter than two
+# collection intervals.
+7 */8 * * * /path/to/ist-flight-monitor/scripts/collect.sh
 
 # --- daily historical summary to Telegram -----------------------------------
 0 23 * * * /path/to/ist-flight-monitor/scripts/daily-report.sh
 
 # --- stall detection --------------------------------------------------------
 # Exits non-zero (and so mails MAILTO, if set) when the newest collection run
-# is older than two intervals or the last run failed.
-35 * * * * /path/to/ist-flight-monitor/scripts/healthcheck.sh >/dev/null
+# is older than two collection intervals, or the last run failed.
+#
+# Every 4 hours rather than hourly: the threshold is two intervals (16h at the
+# current cadence), so an hourly check spawned a container 24 times a day to
+# re-answer a question that cannot change that fast.
+35 */4 * * * /path/to/ist-flight-monitor/scripts/healthcheck.sh >/dev/null
 
 # ============================================================================
 # Quota note for the AeroDataBox free tier (600 units/month):
 #   calls per cycle = ceil((LOOKBACK + LOOKAHEAD) / 12)
 # With LOOKBACK=3 / LOOKAHEAD=9 that is 1 call/cycle = 24/day = ~25 days.
-# To collect less often, change the schedule above to e.g.
-#   7 */2 * * *   (every 2 hours -> 12/day -> comfortably within the free tier)
+# To collect more often, change the schedule above to e.g.
+#   7 */2 * * *   (every 2 hours -> 48/day -> needs a paid plan with two origins)
 # ============================================================================

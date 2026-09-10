@@ -154,6 +154,40 @@ class TestValidation:
         ) == 1.0
 
 
+class TestStalenessOutlivesTheInterval:
+    """A flight must not go stale merely by waiting for the next collection."""
+
+    def test_a_stale_threshold_below_two_intervals_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must exceed twice"):
+            Settings(collection_interval_minutes=480, stale_after_minutes=180)
+
+    def test_exactly_two_intervals_is_still_rejected(self) -> None:
+        """The threshold has to survive one missed cycle, which is what it is for."""
+        with pytest.raises(ValidationError):
+            Settings(collection_interval_minutes=60, stale_after_minutes=120)
+
+    def test_a_comfortable_threshold_is_accepted(self) -> None:
+        config = Settings(collection_interval_minutes=480, stale_after_minutes=1200)
+        assert config.stale_after_minutes == 1200
+
+    def test_the_shipped_defaults_are_consistent(self) -> None:
+        config = Settings()
+        assert config.stale_after_minutes > config.collection_interval_minutes * 2
+
+    @pytest.mark.parametrize("minutes", [5, 15, 30, 60, 120, 240, 480])
+    def test_every_documented_cadence_is_accepted(self, minutes: int) -> None:
+        assert (
+            Settings(
+                collection_interval_minutes=minutes, stale_after_minutes=minutes * 3
+            ).collection_interval_minutes
+            == minutes
+        )
+
+    def test_an_undocumented_cadence_is_still_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(collection_interval_minutes=90, stale_after_minutes=1000)
+
+
 class TestSecurityDefaults:
     def test_no_credential_has_a_real_default(self) -> None:
         """A shipped default secret is a vulnerability, not a convenience."""

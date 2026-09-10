@@ -342,9 +342,9 @@ The most load-bearing ones:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROVIDER_CHAIN` | `aerodatabox` | Ordered failover list. |
-| `COLLECTION_INTERVAL_MINUTES` | `60` | One of 5, 15, 30, 60. |
+| `COLLECTION_INTERVAL_MINUTES` | `480` | One of 5, 15, 30, 60, 120, 240, 480. Must be matched by the cron schedule. |
 | `COLLECTION_LOOKAHEAD_HOURS` | `36` | How far ahead each cycle polls. |
-| `STALE_AFTER_MINUTES` | `180` | Absent this long → marked stale (**not** cancelled). |
+| `STALE_AFTER_MINUTES` | `1200` | Absent this long → marked stale (**not** cancelled). Must exceed twice the interval. |
 | `DELAY_THRESHOLD_MINUTES` | `15` | When a flight counts as delayed. |
 | `MIN_SAMPLE_SIZE_AIRLINE` | `20` | Below this an airline is never ranked. |
 | `PROVIDER_CACHE_TTL_SECONDS` | `240` | Cost control: dedupes identical upstream calls. |
@@ -480,9 +480,9 @@ crontab -l
 
 | Script | Default schedule | What it does |
 |---|---|---|
-| `scripts/collect.sh` | `7 * * * *` | One collection cycle, then aggregate + Telegram alerts |
+| `scripts/collect.sh` | `7 */8 * * *` | One collection cycle, then aggregate + Telegram alerts |
 | `scripts/daily-report.sh` | `0 23 * * *` | Historical summary to Telegram |
-| `scripts/healthcheck.sh` | `35 * * * *` | Exits non-zero if collection has stalled, so cron mails you |
+| `scripts/healthcheck.sh` | `35 */4 * * *` | Exits non-zero if collection has stalled, so cron mails you |
 
 `collect.sh` takes an exclusive `flock`, so a slow cycle is skipped rather than run over
 by the next hour's (exit code `3`). Output goes to `logs/collect.log`, truncated at 10 MB.

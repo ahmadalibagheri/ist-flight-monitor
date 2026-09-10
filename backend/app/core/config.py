@@ -14,7 +14,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-CollectionInterval = Literal[5, 15, 30, 60]
+#: Supported collection cadences, in minutes. The short values suit a metered plan
+#: with headroom; the long ones exist because each additional monitored origin
+#: multiplies API usage, and stretching the interval is the only lever that reduces
+#: it without giving up window coverage.
+CollectionInterval = Literal[5, 15, 30, 60, 120, 240, 480]
 
 
 class Settings(BaseSettings):
@@ -252,6 +256,26 @@ class Settings(BaseSettings):
                 f"Unknown timezone {value!r}. Use an IANA name such as 'Europe/Istanbul'."
             ) from exc
         return value
+
+    @model_validator(mode="after")
+    def _stale_outlives_the_interval(self) -> Settings:
+        """A flight must not be able to go stale merely by waiting for the next cycle.
+
+        ``stale_after_minutes`` is "we have stopped hearing about this flight". If it
+        is shorter than the gap between collections, every flight is marked stale in
+        the quiet period before each cycle - turning the data-quality flag into
+        noise. Two intervals is the smallest threshold that survives one missed
+        cycle, which is the case the flag is actually for.
+        """
+        floor = self.collection_interval_minutes * 2
+        if self.stale_after_minutes <= floor:
+            raise ValueError(
+                f"STALE_AFTER_MINUTES ({self.stale_after_minutes}) must exceed twice "
+                f"COLLECTION_INTERVAL_MINUTES ({self.collection_interval_minutes}), "
+                f"i.e. more than {floor}. Otherwise every flight goes stale between "
+                "collections."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_weights(self) -> Settings:

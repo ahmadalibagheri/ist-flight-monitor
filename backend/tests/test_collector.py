@@ -190,9 +190,22 @@ class TestEventDerivation:
 
 class TestMissingDataPolicy:
     async def test_disappearing_flight_is_marked_stale_not_cancelled(
-        self, db_session, collector
+        self, db_session, collector, monkeypatch
     ) -> None:
-        """The single most important safety rule in the system."""
+        """The single most important safety rule in the system.
+
+        The stale threshold is pinned rather than inherited: it scales with the
+        collection interval, so a test written against one cadence silently stops
+        exercising staleness when the deployment's cadence changes.
+        """
+        import app.services.collector as collector_module
+        from app.core.config import Settings
+
+        monkeypatch.setattr(
+            collector_module,
+            "settings",
+            Settings(collection_interval_minutes=60, stale_after_minutes=180),
+        )
         old_observation = datetime.now(UTC) - timedelta(hours=6)
         stub = StubProvider(
             [

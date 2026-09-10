@@ -3,7 +3,7 @@
 # Hourly collection driver for cron.
 #
 #   crontab -e
-#   7 * * * * /path/to/ist-flight-monitor/scripts/collect.sh
+#   7 */8 * * * /path/to/ist-flight-monitor/scripts/collect.sh
 #
 # Runs one collection cycle inside a throwaway container using the same image,
 # environment and database as the rest of the stack, then aggregates statistics
