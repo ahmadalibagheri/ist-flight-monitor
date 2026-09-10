@@ -170,6 +170,26 @@ Leave `TELEGRAM_BOT_TOKEN` blank to disable Telegram entirely.
 
 ---
 
+## Routes are directional
+
+`MONITORED_ROUTES` is a list of `ORIGIN-DESTINATION` pairs:
+
+```dotenv
+MONITORED_ROUTES=IST-IKA,IST-MHD,IKA-IST
+```
+
+`IST-IKA` and `IKA-IST` are tracked as **separate routes** with separate statistics, and
+nothing collapses them — an airline's outbound punctuality says little about its return.
+
+**Cost:** routes sharing an origin are free to add, because one request returns that
+airport's whole departure board. A new *origin* is not — it needs its own call set, so
+adding `IKA-IST` doubles API usage. See [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+The older `ORIGIN_AIRPORT` / `DESTINATION_AIRPORTS` pair still works when
+`MONITORED_ROUTES` is empty.
+
+---
+
 ## How to read the numbers
 
 The most important design decisions are about *denominators*. Getting these wrong is how
@@ -311,6 +331,8 @@ The most load-bearing ones:
 | `MIN_SAMPLE_SIZE_AIRLINE` | `20` | Below this an airline is never ranked. |
 | `PROVIDER_CACHE_TTL_SECONDS` | `240` | Cost control: dedupes identical upstream calls. |
 | `OPERATIONAL_TIMEZONE` | `Europe/Istanbul` | Reporting timezone. |
+| `MONITORED_ROUTES` | `IST-IKA,IST-MHD` | Directional route pairs. Each extra **origin** multiplies API usage. |
+| `SEED_ON_EMPTY` | `true` | Import the bundled history into an empty database. |
 
 `GET /api/v1/reports/config` returns the effective non-secret configuration of a running
 instance.

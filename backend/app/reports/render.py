@@ -67,7 +67,8 @@ def render_hourly_text(report: HourlyReport) -> str:
 def _route_section(block: RouteBlock) -> list[str]:
     m = block.metrics
     return [
-        f"{block.destination_name} ({block.route.replace('-', ' -> ')})",
+        f"{block.route_name or block.destination_name} "
+        f"({block.route.replace('-', ' -> ')})",
         "",
         f"Flights today:     {m.total_flights}",
         f"Departed:          {block.departed}",

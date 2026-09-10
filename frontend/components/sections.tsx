@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
 import {
   AirlineReliability,
@@ -9,6 +10,7 @@ import {
   DelayRateByHour,
   DelaysOverTime,
   RouteComparison,
+  type RouteComparisonPoint,
   TimeOfDayChart,
 } from "@/components/charts";
 import {
@@ -33,11 +35,13 @@ import {
   type Page,
   type Ranked,
   type RepeatCancellation,
+  type RouteInfo,
   type Summary,
   type TimeOfDay,
   type Trend,
   endpoints,
   fetcher,
+  routePair,
 } from "@/lib/api";
 import {
   STATUS_COLORS,
@@ -247,7 +251,9 @@ export function RouteSection({
   return (
     <>
       <div className="heading">
-        {title} — {route.replace("-", " → ")}
+        {title && title !== routePair(route)
+          ? `${title} — ${routePair(route)}`
+          : routePair(route)}
       </div>
       <Guard result={summary}>
         {(data) => (
@@ -270,7 +276,10 @@ export function RouteSection({
             }
           </Guard>
         </Panel>
-        <Panel title="Delay rate by hour of day" note="Local time (Europe/Istanbul).">
+        <Panel
+          title="Delay rate by hour of day"
+          note="Hours are bucketed in the monitor's operational timezone."
+        >
           <Guard result={hourly}>{(data) => <DelayRateByHour data={data} />}</Guard>
         </Panel>
       </div>
@@ -456,7 +465,10 @@ export function DelaysSection({ filters }: { filters: Filters }) {
       </Guard>
 
       <div className="split" style={{ marginTop: 14 }}>
-        <Panel title="Delay rate by hour of day" note="Local time (Europe/Istanbul).">
+        <Panel
+          title="Delay rate by hour of day"
+          note="Hours are bucketed in the monitor's operational timezone."
+        >
           <Guard result={hourly}>{(data) => <DelayRateByHour data={data} />}</Guard>
         </Panel>
         <Panel title="Average delay over time">
@@ -609,7 +621,7 @@ function TimeOfDayPanel({ verdict }: { verdict: TimeOfDay }) {
           tone="stop"
         />
       </div>
-      <Panel title="By time-of-day window" note="Local time (Europe/Istanbul).">
+      <Panel title="By time-of-day window" note="Hours are bucketed in the monitor's operational timezone.">
         <TimeOfDayChart data={verdict.periods} />
         <div className="scroll" style={{ marginTop: 12 }}>
           <table>
@@ -670,7 +682,7 @@ export function TimeOfDaySection({ filters }: { filters: Filters }) {
           <>
             {data.map((verdict) => (
               <div key={verdict.route}>
-                <div className="heading">{verdict.route.replace("-", " → ")}</div>
+                <div className="heading">{routePair(verdict.route)}</div>
                 <TimeOfDayPanel verdict={verdict} />
               </div>
             ))}
@@ -682,29 +694,65 @@ export function TimeOfDaySection({ filters }: { filters: Filters }) {
 }
 
 /* ------------------------------------------------------------- 9. Historical */
+
+/**
+ * Fetch one route's summary for the comparison chart.
+ *
+ * The comparison covers however many routes are configured, and a hook cannot be
+ * called in a loop — so each route gets its own component instance with its own
+ * fixed set of hooks, and reports its point up to the parent, which draws the single
+ * combined chart. This renders nothing itself.
+ */
+function RouteComparisonProbe({
+  filters,
+  route,
+  onPoint,
+}: {
+  filters: Filters;
+  route: string;
+  onPoint: (route: string, point: RouteComparisonPoint | null) => void;
+}) {
+  const { data } = useApi<Summary>(endpoints.statistics({ ...filters, route }));
+
+  useEffect(() => {
+    onPoint(
+      route,
+      data
+        ? {
+            // The axis label has to fit several routes, so it uses the directional
+            // IATA pair rather than the (much longer) city pair.
+            route: routePair(route),
+            cancellation_rate: data.cancellation_rate,
+            delay_rate: data.delay_rate,
+            on_time_rate: data.on_time_rate,
+          }
+        : null,
+    );
+  }, [route, data, onPoint]);
+
+  return null;
+}
+
 export function TrendsSection({ filters }: { filters: Filters }) {
   const trends = useApi<Trend[]>(endpoints.trends(30));
   const daily = useApi<DailyPoint[]>(endpoints.daily(filters));
-  const ika = useApi<Summary>(endpoints.statistics({ ...filters, route: "IST-IKA" }));
-  const mhd = useApi<Summary>(endpoints.statistics({ ...filters, route: "IST-MHD" }));
+  const routes = useApi<RouteInfo[]>(endpoints.routes());
 
-  const comparison =
-    ika.data && mhd.data
-      ? [
-          {
-            route: "IST-IKA",
-            cancellation_rate: ika.data.cancellation_rate,
-            delay_rate: ika.data.delay_rate,
-            on_time_rate: ika.data.on_time_rate,
-          },
-          {
-            route: "IST-MHD",
-            cancellation_rate: mhd.data.cancellation_rate,
-            delay_rate: mhd.data.delay_rate,
-            on_time_rate: mhd.data.on_time_rate,
-          },
-        ]
-      : [];
+  const [points, setPoints] = useState<Record<string, RouteComparisonPoint | null>>({});
+  // Stable identity: the probes' effects must not re-run on every parent render.
+  const onPoint = useCallback((route: string, point: RouteComparisonPoint | null) => {
+    setPoints((previous) =>
+      previous[route] === point ? previous : { ...previous, [route]: point },
+    );
+  }, []);
+
+  const known = routes.data ?? [];
+  // Driven by the route list, so a point left over from a route that is no longer
+  // collected is ignored rather than charted.
+  const comparison = known
+    .map((entry) => points[entry.route])
+    .filter((point): point is RouteComparisonPoint => Boolean(point));
+  const complete = known.length > 0 && comparison.length === known.length;
 
   return (
     <>
@@ -712,8 +760,20 @@ export function TrendsSection({ filters }: { filters: Filters }) {
         title="Route comparison"
         note="Rates over the selected window. On-time and delay rates share the measurable-flight denominator."
       >
-        {comparison.length ? (
+        {known.map((entry) => (
+          <RouteComparisonProbe
+            key={entry.route}
+            filters={filters}
+            route={entry.route}
+            onPoint={onPoint}
+          />
+        ))}
+        {routes.error ? (
+          <FeedError error={routes.error} />
+        ) : complete ? (
           <RouteComparison data={comparison} />
+        ) : known.length === 0 && !routes.isLoading ? (
+          <Vacant>No routes are being collected.</Vacant>
         ) : (
           <Waiting label="Comparing routes" />
         )}
@@ -726,7 +786,7 @@ export function TrendsSection({ filters }: { filters: Filters }) {
             {data.map((entry) => (
               <Panel
                 key={entry.route}
-                title={entry.route.replace("-", " → ")}
+                title={routePair(entry.route)}
                 note={`Last ${entry.window_days} days vs the ${entry.window_days} before. A positive change means it got worse, except on-time rate.`}
               >
                 {!entry.sufficient_data && (

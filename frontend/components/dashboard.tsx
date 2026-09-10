@@ -20,12 +20,14 @@ import {
   type RouteInfo,
   endpoints,
   fetcher,
+  routeLabel,
+  routePair,
 } from "@/lib/api";
 
-const TABS = [
-  { id: "overview", label: "Overview" },
-  { id: "tehran", label: "Tehran" },
-  { id: "mashhad", label: "Mashhad" },
+const OVERVIEW_TAB = { id: "overview", label: "Overview" } as const;
+
+/** Tabs that exist regardless of which routes are configured. */
+const ANALYSIS_TABS = [
   { id: "airlines", label: "Airlines" },
   { id: "flights", label: "Flights" },
   { id: "delays", label: "Delays" },
@@ -34,7 +36,85 @@ const TABS = [
   { id: "trends", label: "Historical trends" },
 ] as const;
 
-type TabId = (typeof TABS)[number]["id"];
+/**
+ * Per-route tabs come from `GET /routes` at runtime, so their ids are namespaced —
+ * a route code can then never collide with one of the fixed tab ids.
+ */
+const ROUTE_TAB = "route:";
+
+type RouteTabId = `${typeof ROUTE_TAB}${string}`;
+type TabId = typeof OVERVIEW_TAB.id | (typeof ANALYSIS_TABS)[number]["id"] | RouteTabId;
+
+interface Tab {
+  id: TabId;
+  label: string;
+}
+
+interface Corridor {
+  hub: string;
+  arrow: string;
+  spokes: string[];
+  sentence: string;
+}
+
+/** "A, B and C" — the list style used in the strapline. */
+function joinList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * Describe the corridor the deployment is watching.
+ *
+ * Routes are directional and may include return legs (IKA-IST alongside IST-IKA),
+ * so the hub is whichever airport appears in the most legs — origins weighted, to
+ * break the tie on a single unpaired route — and the arrow says which directions
+ * are actually collected: outbound, inbound, or both.
+ */
+function describeCorridor(routes: RouteInfo[]): Corridor | null {
+  if (routes.length === 0) return null;
+
+  const seen: string[] = [];
+  const weight = new Map<string, number>();
+  const names = new Map<string, string>();
+  const bump = (code: string, points: number) => {
+    if (!seen.includes(code)) seen.push(code);
+    weight.set(code, (weight.get(code) ?? 0) + points);
+  };
+  for (const entry of routes) {
+    // An origin counts double so a lone leg resolves to its origin as the hub.
+    bump(entry.origin_iata, 3);
+    bump(entry.destination_iata, 2);
+    // Cities only: `*_name` is the airport's own name, which reads badly in prose.
+    if (entry.origin_city) names.set(entry.origin_iata, entry.origin_city);
+    if (entry.destination_city) names.set(entry.destination_iata, entry.destination_city);
+  }
+
+  const hub = seen.reduce((best, code) =>
+    (weight.get(code) ?? 0) > (weight.get(best) ?? 0) ? code : best,
+  );
+  const outbound = routes.some((entry) => entry.origin_iata === hub);
+  const inbound = routes.some((entry) => entry.destination_iata === hub);
+  const spokes = seen.filter((code) => code !== hub);
+
+  const hubName = names.get(hub) ?? hub;
+  const spokeNames = joinList(spokes.map((code) => names.get(code) ?? code));
+  const sentence =
+    spokes.length === 0
+      ? `Flights at ${hubName}.`
+      : outbound && inbound
+        ? `Direct flights linking ${hubName} with ${spokeNames}.`
+        : inbound
+          ? `Direct arrivals into ${hubName} from ${spokeNames}.`
+          : `Direct departures from ${hubName} to ${spokeNames}.`;
+
+  return {
+    hub,
+    arrow: outbound && inbound ? "⇄" : inbound ? "←" : "→",
+    spokes,
+    sentence,
+  };
+}
 
 const WINDOWS = [
   { value: "today", label: "Today" },
@@ -142,6 +222,25 @@ export default function Dashboard() {
     fetcher<Airline[]>,
   );
 
+  const routeTabs: Tab[] = useMemo(
+    () =>
+      (routes ?? []).map((entry) => ({
+        id: `${ROUTE_TAB}${entry.route}` as RouteTabId,
+        label: routeLabel(entry),
+      })),
+    [routes],
+  );
+  const tabs: Tab[] = [OVERVIEW_TAB, ...routeTabs, ...ANALYSIS_TABS];
+  const routeTab = routeTabs.find((entry) => entry.id === tab);
+  const corridor = useMemo(() => describeCorridor(routes ?? []), [routes]);
+
+  // A route can stop being collected between page loads; don't strand the user on a
+  // tab that no longer has a route behind it.
+  useEffect(() => {
+    if (!routes || !tab.startsWith(ROUTE_TAB)) return;
+    if (!routes.some((entry) => `${ROUTE_TAB}${entry.route}` === tab)) setTab("overview");
+  }, [routes, tab]);
+
   const filters: Filters = useMemo(
     () => ({
       window,
@@ -167,13 +266,33 @@ export default function Dashboard() {
     <div className="shell">
       <header className="masthead">
         <div>
+          {/*
+            The corridor is unknown until /routes answers. Rather than flash a
+            hardcoded pair, the headline holds its space and the strapline shows only
+            the half that is true for every deployment.
+          */}
           <h1 className="corridor">
-            IST <span className="arrow">→</span> <span className="dest">IKA</span>{" "}
-            <span className="arrow">/</span> <span className="dest">MHD</span>
+            {corridor ? (
+              <>
+                {corridor.hub} <span className="arrow">{corridor.arrow}</span>{" "}
+                {corridor.spokes.flatMap((code, index) => [
+                  index > 0 ? (
+                    <span key={`sep-${code}`} className="arrow">
+                      {" / "}
+                    </span>
+                  ) : null,
+                  <span key={code} className="dest">
+                    {code}
+                  </span>,
+                ])}
+              </>
+            ) : (
+              " "
+            )}
           </h1>
           <p className="strapline">
-            Direct departures from Istanbul to Tehran and Mashhad. Times are Istanbul
-            local.
+            {corridor ? `${corridor.sentence} ` : ""}
+            Times are shown in the monitor&apos;s operational timezone.
           </p>
         </div>
         <div>
@@ -183,7 +302,7 @@ export default function Dashboard() {
       </header>
 
       <nav className="sections" role="tablist">
-        {TABS.map((entry) => (
+        {tabs.map((entry) => (
           <button
             key={entry.id}
             role="tab"
@@ -239,7 +358,7 @@ export default function Dashboard() {
             <option value="">All routes</option>
             {(routes ?? []).map((entry) => (
               <option key={entry.route} value={entry.route}>
-                {entry.route.replace("-", " → ")}
+                {routePair(entry.route)}
               </option>
             ))}
           </select>
@@ -278,11 +397,12 @@ export default function Dashboard() {
       <ProviderBanner />
 
       {tab === "overview" && <OverviewSection filters={filters} />}
-      {tab === "tehran" && (
-        <RouteSection filters={filters} route="IST-IKA" title="Tehran" />
-      )}
-      {tab === "mashhad" && (
-        <RouteSection filters={filters} route="IST-MHD" title="Mashhad" />
+      {routeTab && (
+        <RouteSection
+          filters={filters}
+          route={routeTab.id.slice(ROUTE_TAB.length)}
+          title={routeTab.label}
+        />
       )}
       {tab === "airlines" && <AirlinesSection filters={filters} />}
       {tab === "flights" && <FlightsSection filters={filters} />}

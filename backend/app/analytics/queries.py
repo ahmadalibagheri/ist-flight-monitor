@@ -23,6 +23,16 @@ from app.core.timeutil import local_day_bounds, utcnow
 from app.models import Flight
 
 
+class UnknownRouteFilter(ValueError):
+    """A route filter that is not a full ``ORIGIN-DESTINATION`` pair.
+
+    Its own type rather than a bare ``ValueError`` so the API can answer 400 instead
+    of 500. The HTTP layer validates first, so reaching this means an internal caller
+    passed a bare code - which is ambiguous once an airport is both an origin and a
+    destination, and is refused rather than guessed at.
+    """
+
+
 def _base_select() -> Select[tuple[Flight]]:
     return select(Flight).where(
         Flight.is_mock.is_(False),
@@ -152,21 +162,20 @@ def _apply_filters(
 ) -> Select[tuple[Flight]]:
     if route:
         origin, _, destination = route.partition("-")
-        if destination:
-            stmt = stmt.where(
-                and_(
-                    Flight.origin_iata == origin.upper(),
-                    Flight.destination_iata == destination.upper(),
-                )
+        if not destination:
+            # A bare code used to mean "this destination, from the one configured
+            # origin". An airport is now both an origin and a destination, so such a
+            # filter names two opposite routes and is refused rather than guessed at.
+            raise UnknownRouteFilter(
+                f"Route filter {route!r} must be written as ORIGIN-DESTINATION. "
+                f"Monitored routes: {', '.join(settings.route_labels())}."
             )
-        else:
-            # Bare destination code, e.g. "IKA".
-            stmt = stmt.where(
-                and_(
-                    Flight.origin_iata == settings.origin_airport,
-                    Flight.destination_iata == route.upper(),
-                )
+        stmt = stmt.where(
+            and_(
+                Flight.origin_iata == origin.upper(),
+                Flight.destination_iata == destination.upper(),
             )
+        )
     if airline:
         stmt = stmt.where(Flight.airline_iata == airline.upper())
     if flight_number:

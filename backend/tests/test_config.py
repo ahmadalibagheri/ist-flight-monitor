@@ -34,6 +34,91 @@ class TestListParsing:
         assert config.destination_airports == ["IKA", "MHD"]
 
 
+class TestDirectionalRoutes:
+    """Direction is significant: IST-IKA and IKA-IST are separate routes."""
+
+    def test_explicit_pairs_are_parsed_in_order(self) -> None:
+        config = Settings(monitored_routes="IST-IKA,IST-MHD,IKA-IST")
+        assert config.routes == [("IST", "IKA"), ("IST", "MHD"), ("IKA", "IST")]
+
+    def test_a_return_leg_is_not_collapsed_into_the_outbound(self) -> None:
+        config = Settings(monitored_routes="IST-IKA,IKA-IST")
+        assert ("IST", "IKA") in config.routes
+        assert ("IKA", "IST") in config.routes
+        assert len(config.routes) == 2
+
+    def test_origins_are_distinct_and_ordered(self) -> None:
+        config = Settings(monitored_routes="IST-IKA,IST-MHD,IKA-IST,MHD-IST")
+        assert config.origins == ["IST", "IKA", "MHD"]
+
+    def test_destinations_are_grouped_per_origin(self) -> None:
+        """Filtering per origin is what stops an unconfigured pair being collected."""
+        config = Settings(monitored_routes="IST-IKA,IST-MHD,IKA-IST")
+        assert config.destinations_by_origin == {
+            "IST": ["IKA", "MHD"],
+            "IKA": ["IST"],
+        }
+
+    def test_lowercase_and_whitespace_are_tolerated(self) -> None:
+        config = Settings(monitored_routes=" ist-ika , ika-ist ")
+        assert config.routes == [("IST", "IKA"), ("IKA", "IST")]
+
+    def test_duplicates_collapse(self) -> None:
+        config = Settings(monitored_routes="IST-IKA,IST-IKA")
+        assert config.routes == [("IST", "IKA")]
+
+    def test_route_labels_are_strings(self) -> None:
+        assert Settings(monitored_routes="IKA-IST").route_labels() == ["IKA-IST"]
+
+    @pytest.mark.parametrize("bad", ["IST", "IST-", "-IKA", "IST-IST", "ISTANBUL-IKA", "I-IKA"])
+    def test_malformed_routes_are_rejected(self, bad: str) -> None:
+        with pytest.raises(ValidationError):
+            Settings(monitored_routes=bad)
+
+    def test_legacy_single_origin_form_still_works(self) -> None:
+        """An existing deployment's config must keep working untouched."""
+        config = Settings(origin_airport="IST", destination_airports="IKA,MHD")
+        assert config.monitored_routes == []
+        assert config.routes == [("IST", "IKA"), ("IST", "MHD")]
+        assert config.origins == ["IST"]
+
+    def test_explicit_routes_take_precedence_over_the_legacy_form(self) -> None:
+        config = Settings(
+            monitored_routes="IKA-IST", origin_airport="IST", destination_airports="IKA,MHD"
+        )
+        assert config.routes == [("IKA", "IST")]
+
+
+class TestAirportTimezones:
+    """AeroDataBox wants each request's window in the ORIGIN airport's local time."""
+
+    def test_each_airport_resolves_its_own_zone(self) -> None:
+        from datetime import UTC, datetime
+
+        from app.core.airports import timezone_for
+
+        moment = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+        istanbul = moment.astimezone(timezone_for("IST"))
+        tehran = moment.astimezone(timezone_for("IKA"))
+        # Tehran is UTC+03:30 against Istanbul's UTC+03:00, so a window built in
+        # Istanbul time for a Tehran origin is shifted half an hour.
+        assert (tehran.hour, tehran.minute) != (istanbul.hour, istanbul.minute)
+        assert tehran.utcoffset() != istanbul.utcoffset()
+
+    def test_an_unknown_airport_falls_back_rather_than_raising(self) -> None:
+        """A missing entry should degrade, not stop collection."""
+        from app.core.airports import timezone_for
+        from app.core.config import settings as live
+
+        assert str(timezone_for("XXX")) == live.operational_timezone
+
+    def test_route_labels_name_both_ends_in_order(self) -> None:
+        from app.core.airports import route_label
+
+        assert route_label("IST", "IKA") == "Istanbul to Tehran"
+        assert route_label("IKA", "IST") == "Tehran to Istanbul"
+
+
 class TestDerivedValues:
     def test_routes_pair_origin_with_each_destination(self) -> None:
         assert Settings(origin_airport="IST", destination_airports="IKA,MHD").routes == [

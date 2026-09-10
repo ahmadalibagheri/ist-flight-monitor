@@ -109,6 +109,9 @@ def effective_config() -> dict[str, object]:
     return {
         "environment": settings.environment,
         "timezone": settings.operational_timezone,
+        "routes": settings.route_labels(),
+        # Kept alongside `routes` so a client written against the single-origin
+        # shape keeps working; they describe only the legacy configuration form.
         "origin_airport": settings.origin_airport,
         "destination_airports": settings.destination_airports,
         "include_codeshare": settings.include_codeshare,

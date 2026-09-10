@@ -24,6 +24,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.core.airports import timezone_for
 from app.core.config import settings
 from app.core.enums import ProviderKind
 from app.core.logging_config import get_logger
@@ -95,8 +96,8 @@ class AeroDataBoxProvider(FlightDataProvider):
             window_start, window_end, settings.aerodatabox_window_hours
         ):
             # Path segments are local airport time, minute precision, no offset.
-            from_local = _local_path(chunk_start)
-            to_local = _local_path(chunk_end)
+            from_local = _local_path(chunk_start, origin)
+            to_local = _local_path(chunk_end, origin)
             path = f"/flights/airports/iata/{origin.upper()}/{from_local}/{to_local}"
 
             payload = await self._http.get_json(
@@ -262,9 +263,16 @@ def _chunk_window(
     return chunks
 
 
-def _local_path(value: datetime) -> str:
-    """Format a UTC instant as the local ``YYYY-MM-DDTHH:MM`` AeroDataBox expects."""
-    local = to_local(value)
+def _local_path(value: datetime, origin: str) -> str:
+    """Format a UTC instant in the *origin airport's* local time.
+
+    AeroDataBox interprets these path segments as local time at the airport being
+    queried - not UTC, and not the monitor's operational timezone. Using the
+    operational timezone was invisibly correct while IST was the only origin;
+    for an IKA origin it shifts the window by Tehran's extra half hour and clips
+    flights at both edges of the range.
+    """
+    local = to_local(value, timezone_for(origin))
     assert local is not None
     return local.strftime("%Y-%m-%dT%H:%M")
 

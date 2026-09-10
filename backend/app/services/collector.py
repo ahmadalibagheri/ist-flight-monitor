@@ -108,60 +108,93 @@ class FlightCollector:
             trigger=trigger,
             window_start=window_start.isoformat(),
             window_end=window_end.isoformat(),
-            routes=[f"{o}-{d}" for o, d in settings.routes],
+            routes=settings.route_labels(),
         )
 
         per_provider: list[list[NormalizedFlight]] = []
         provenance: dict[tuple[str, str, str, str], dict[str, str]] = {}
+        attempted: list[str] = []
+        errors: list[str] = []
+        providers_used: list[str] = []
+        raw_count = 0
+        flights: list[NormalizedFlight] = []
+
+        # One fetch per origin airport, because every provider serves a single
+        # airport's departure board per request. Routes are grouped by origin so an
+        # origin is only asked for the destinations actually configured from it -
+        # filtering against one global destination set would also accept pairs
+        # nobody asked to monitor.
+        #
+        # `fetched_origins` records which origins genuinely returned data. It is what
+        # keeps the staleness sweep honest: if the IKA board fails while IST succeeds,
+        # marking every IKA flight stale would report a provider outage as though the
+        # flights had vanished from the schedule.
+        fetched_origins: set[str] = set()
+
+        for origin, destinations in settings.destinations_by_origin.items():
+            if settings.provider_strategy == "merge":
+                results, origin_attempted, origin_errors = await self.registry.fetch_all(
+                    session, origin, destinations, window_start, window_end
+                )
+                origin_batches = [r.flights for r in results]
+                origin_providers = [r.provider for r in results]
+                succeeded = bool(results)
+            else:
+                result, origin_attempted, origin_errors = (
+                    await self.registry.fetch_with_failover(
+                        session, origin, destinations, window_start, window_end
+                    )
+                )
+                origin_batches = [result.flights] if result else []
+                origin_providers = [result.provider] if result else []
+                succeeded = result is not None
+
+            for name in origin_attempted:
+                if name not in attempted:
+                    attempted.append(name)
+            errors.extend(f"{origin}: {e}" for e in origin_errors)
+
+            if not succeeded:
+                log.warning("collection.origin_failed", origin=origin, errors=origin_errors)
+                continue
+
+            fetched_origins.add(origin)
+            per_provider.extend(origin_batches)
+            raw_count += sum(len(b) for b in origin_batches)
+            for name in origin_providers:
+                if name not in providers_used:
+                    providers_used.append(name)
+
+        if not fetched_origins:
+            summary.providers_attempted = attempted
+            summary.errors = errors
+            summary.success = False
+            summary.error = "; ".join(errors) or "no provider returned data"
+            self._finalise(session, run, summary, started)
+            log.error("collection.failed", run_id=run.id, errors=errors)
+            return summary
+
+        summary.provider = "+".join(providers_used)
 
         if settings.provider_strategy == "merge":
-            results, attempted, errors = await self.registry.fetch_all(
-                session,
-                settings.origin_airport,
-                settings.destination_airports,
-                window_start,
-                window_end,
-            )
-            if not results:
-                summary.providers_attempted = attempted
-                summary.errors = errors
-                summary.success = False
-                summary.error = "; ".join(errors) or "no provider returned data"
-                self._finalise(session, run, summary, started)
-                log.error("collection.failed", run_id=run.id, errors=errors)
-                return summary
-
-            per_provider = [r.flights for r in results]
             flights, provenance, conflicts = merge_all(per_provider, self.registry.chain)
-            summary.provider = "+".join(r.provider for r in results)
+            summary.merge_conflicts = len(conflicts)
             summary.enriched_flights = sum(
                 1
                 for key in provenance
                 if sum(1 for batch in per_provider for f in batch if f.dedup_key() == key) > 1
             )
-            summary.merge_conflicts = len(conflicts)
-            raw_count = sum(len(b) for b in per_provider)
         else:
-            result, attempted, errors = await self.registry.fetch_with_failover(
-                session,
-                settings.origin_airport,
-                settings.destination_airports,
-                window_start,
-                window_end,
-            )
-            if result is None:
-                summary.providers_attempted = attempted
-                summary.errors = errors
-                summary.success = False
-                summary.error = "; ".join(errors) or "no provider returned data"
-                self._finalise(session, run, summary, started)
-                log.error("collection.failed", run_id=run.id, errors=errors)
-                return summary
+            # Each origin contributes its own batch, so they still need collapsing
+            # even in failover mode.
+            flights = _deduplicate([f for batch in per_provider for f in batch])
 
-            summary.provider = result.provider
-            per_provider = [result.flights]
-            flights = _deduplicate(result.flights)
-            raw_count = len(result.flights)
+        # A partial cycle is still worth keeping - the origins that answered are
+        # recorded, and the ones that did not are reported rather than inferred.
+        missing = [o for o in settings.origins if o not in fetched_origins]
+        if missing:
+            summary.error = f"no data for origin(s): {', '.join(missing)}"
+            log.warning("collection.partial", fetched=sorted(fetched_origins), missing=missing)
 
         summary.providers_attempted = attempted
         summary.errors = errors
@@ -214,7 +247,7 @@ class FlightCollector:
             1 for e in events if e.event_type is EventType.DELAY_INCREASED
         )
 
-        summary.stale_marked = self._mark_stale(session, seen_ids)
+        summary.stale_marked = self._mark_stale(session, seen_ids, fetched_origins)
         summary.success = True
         self._finalise(session, run, summary, started)
 
@@ -383,7 +416,9 @@ class FlightCollector:
         return events
 
     # ------------------------------------------------------------- staleness
-    def _mark_stale(self, session: Session, seen_ids: set[int]) -> int:
+    def _mark_stale(
+        self, session: Session, seen_ids: set[int], fetched_origins: set[str]
+    ) -> int:
         """Flag flights inside the polled window that the provider stopped reporting.
 
         This deliberately does **not** touch ``status``. A flight vanishing from a
@@ -403,6 +438,10 @@ class FlightCollector:
         # no further word.
         candidates = session.scalars(
             select(Flight).where(
+                # Only origins whose board we actually read this cycle. A flight
+                # whose origin failed to fetch has not gone missing from the
+                # schedule; we simply did not look.
+                Flight.origin_iata.in_(fetched_origins),
                 Flight.last_seen_at < cutoff,
                 Flight.data_quality != DataQuality.STALE,
                 # DEPARTED is included here even though it is not *terminal*: the

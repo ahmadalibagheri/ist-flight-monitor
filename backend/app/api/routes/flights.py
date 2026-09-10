@@ -28,6 +28,33 @@ def _serialise(flight: Flight) -> FlightOut:
     return out
 
 
+#: Wording of the ``route`` query parameter, shared with the statistics endpoints.
+ROUTE_QUERY_DESCRIPTION = (
+    'Full route as ORIGIN-DESTINATION, e.g. "IST-IKA". A bare airport code is '
+    "rejected because it does not name a direction."
+)
+
+
+def split_route(route: str) -> tuple[str, str]:
+    """Split a ``route`` filter into ``(origin, destination)``.
+
+    A bare code used to be read as a destination reached from the single configured
+    origin. With return legs monitored an airport is both an origin and a
+    destination, so ``IKA`` names two opposite routes; answering one of them
+    silently would be worse than refusing the filter.
+    """
+    origin, separator, destination = route.strip().upper().partition("-")
+    if not separator or not origin or not destination:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Route filter '{route}' must be written as ORIGIN-DESTINATION. "
+                f"Monitored routes: {', '.join(settings.route_labels())}."
+            ),
+        )
+    return origin, destination
+
+
 def _filtered(
     route: str | None,
     airline: str | None,
@@ -41,17 +68,11 @@ def _filtered(
     if not include_mock:
         stmt = stmt.where(Flight.is_mock.is_(False))
     if route:
-        origin, _, destination = route.partition("-")
-        if destination:
-            stmt = stmt.where(
-                Flight.origin_iata == origin.upper(),
-                Flight.destination_iata == destination.upper(),
-            )
-        else:
-            stmt = stmt.where(
-                Flight.origin_iata == settings.origin_airport,
-                Flight.destination_iata == route.upper(),
-            )
+        origin, destination = split_route(route)
+        stmt = stmt.where(
+            Flight.origin_iata == origin,
+            Flight.destination_iata == destination,
+        )
     if airline:
         stmt = stmt.where(Flight.airline_iata == airline.upper())
     if flight_number:
@@ -69,7 +90,7 @@ def _filtered(
 def list_flights(
     session: DbSession,
     page: Pagination,
-    route: Annotated[str | None, Query(description='e.g. "IST-IKA" or just "IKA".')] = None,
+    route: Annotated[str | None, Query(description=ROUTE_QUERY_DESCRIPTION)] = None,
     airline: Annotated[str | None, Query(description="Airline IATA code.")] = None,
     flight_number: Annotated[str | None, Query()] = None,
     flight_status: Annotated[FlightStatus | None, Query(alias="status")] = None,
@@ -157,14 +178,17 @@ def list_routes(session: DbSession) -> list[RouteOut]:
                 Flight.is_mock.is_(False),
             )
         ).one()
-        airport = airports.get(destination)
+        from_airport = airports.get(origin)
+        to_airport = airports.get(destination)
         out.append(
             RouteOut(
                 route=f"{origin}-{destination}",
                 origin_iata=origin,
                 destination_iata=destination,
-                destination_name=airport.name if airport else None,
-                destination_city=airport.city if airport else None,
+                origin_name=from_airport.name if from_airport else None,
+                origin_city=from_airport.city if from_airport else None,
+                destination_name=to_airport.name if to_airport else None,
+                destination_city=to_airport.city if to_airport else None,
                 total_flights=stats[0] or 0,
                 first_seen=stats[1],
                 last_seen=stats[2],

@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.analytics.queries import UnknownRouteFilter
 from app.api.routes import admin, flights, health, reports, statistics
 from app.core.config import settings
 from app.core.logging_config import configure_logging, get_logger
@@ -28,9 +29,12 @@ from app.providers.base import ProviderError
 log = get_logger(__name__)
 
 DESCRIPTION = """
-Monitors every direct departure from **Istanbul Airport (IST)** to
-**Tehran Imam Khomeini (IKA)** and **Mashhad (MHD)**, and turns the collected
-history into delay, cancellation, time-of-day and reliability analytics.
+Monitors direct departures on a configured set of routes and turns the collected
+history into delay, cancellation, time-of-day and reliability analytics. Routes are
+**directional** — `IST-IKA` and `IKA-IST` are tracked separately and never
+collapsed, because an airline's punctuality outbound says little about its return.
+
+Call `GET /api/v1/routes` for what this instance is actually monitoring.
 
 ### How to read the numbers
 
@@ -58,7 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         "app.starting",
         environment=settings.environment,
         timezone=settings.operational_timezone,
-        routes=[f"{o}-{d}" for o, d in settings.routes],
+        routes=settings.route_labels(),
         provider_chain=settings.provider_chain,
         scheduler_enabled=settings.scheduler_enabled,
     )
@@ -127,6 +131,21 @@ for router in (flights.router, statistics.router, reports.router, admin.router):
     app.include_router(router, prefix=settings.api_prefix)
 
 
+@app.exception_handler(UnknownRouteFilter)
+async def unknown_route_handler(request: Request, exc: UnknownRouteFilter) -> JSONResponse:
+    """A malformed route filter is the caller's mistake, not a server fault.
+
+    The route query parameters validate before reaching the analytics layer, so this
+    only fires for a path that bypassed them - but answering 400 with the monitored
+    routes is far more useful than a 500.
+    """
+    log.info("api.unknown_route_filter", path=request.url.path, detail=str(exc))
+    return JSONResponse(
+        status_code=400,
+        content={"detail": str(exc), "routes": settings.route_labels()},
+    )
+
+
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, object]:
     return {
@@ -137,5 +156,5 @@ def root() -> dict[str, object]:
         "health": "/health",
         "readiness": "/ready",
         "api_prefix": settings.api_prefix,
-        "routes_monitored": [f"{o}-{d}" for o, d in settings.routes],
+        "routes_monitored": settings.route_labels(),
     }

@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analytics.insights import (
@@ -40,7 +41,7 @@ from app.core.config import settings
 from app.core.enums import FlightStatus
 from app.core.logging_config import get_logger
 from app.core.timeutil import to_local, utcnow
-from app.models import Flight
+from app.models import Airport, Flight
 
 log = get_logger(__name__)
 
@@ -78,6 +79,10 @@ class RouteBlock:
     metrics: MetricBlock
     departed: int = 0
     scheduled_remaining: int = 0
+    #: Directional label such as ``"TEHRAN -> ISTANBUL"``. A destination name alone
+    #: cannot identify a route once both legs are monitored, because "TEHRAN" is
+    #: equally true of IST-IKA and IKA-IST.
+    route_name: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload = dict(self.metrics.as_columns())
@@ -85,6 +90,7 @@ class RouteBlock:
             {
                 "route": self.route,
                 "destination_name": self.destination_name,
+                "route_name": self.route_name or self.destination_name,
                 "departed": self.departed,
                 "scheduled_remaining": self.scheduled_remaining,
                 "measurable_flights": self.metrics.measurable_flights,
@@ -156,7 +162,25 @@ class HistoricalReport:
         }
 
 
-ROUTE_NAMES: dict[str, str] = {"IKA": "TEHRAN", "MHD": "MASHHAD"}
+def _airport_labels(session: Session) -> dict[str, str]:
+    """Human labels keyed by IATA code, read from the airports reference table.
+
+    The table is seeded by the initial migration and enriched by the collector, so
+    the reports never carry their own hard-coded map of codes to place names.
+    A city is what a reader recognises, then the airport's own name, then the code.
+    ``city`` is nullable for an airport the collector discovered rather than one the
+    migration seeded, so falling straight from city to code would print a bare code
+    for a row that does carry a usable name.
+    """
+    return {
+        airport.iata: (airport.city or airport.name or airport.iata).upper()
+        for airport in session.scalars(select(Airport)).all()
+    }
+
+
+def _route_label(labels: dict[str, str], origin: str, destination: str) -> str:
+    """A label that states the direction, e.g. ``"TEHRAN -> ISTANBUL"``."""
+    return f"{labels.get(origin, origin)} -> {labels.get(destination, destination)}"
 
 
 def build_hourly_report(
@@ -186,13 +210,22 @@ def build_hourly_report(
         )
 
     # ---- per-route current status ---------------------------------------
-    for destination in settings.destination_airports:
-        route = f"{settings.origin_airport}-{destination}"
-        route_flights = [f for f in todays_flights if f.destination_iata == destination]
+    labels = _airport_labels(session)
+    for origin, destination in settings.routes:
+        route = f"{origin}-{destination}"
+        # Both endpoints have to match. Filtering on the destination alone counted
+        # every flight arriving there, whichever origin it left from, so a second
+        # configured origin inflated this route's numbers with the other one's.
+        route_flights = [
+            f
+            for f in todays_flights
+            if f.origin_iata == origin and f.destination_iata == destination
+        ]
         facts = facts_for_local_dates(session, today, today, route=route)
         block = RouteBlock(
             route=route,
-            destination_name=ROUTE_NAMES.get(destination, destination),
+            destination_name=labels.get(destination, destination),
+            route_name=_route_label(labels, origin, destination),
             metrics=compute_metrics(facts),
             departed=sum(1 for f in route_flights if f.status.has_departed),
             scheduled_remaining=sum(
@@ -216,8 +249,7 @@ def build_hourly_report(
     report.delayed.sort(key=lambda i: i.delay_minutes or 0, reverse=True)
 
     # ---- longer-window verdicts -----------------------------------------
-    for destination in settings.destination_airports:
-        route = f"{settings.origin_airport}-{destination}"
+    for route in settings.route_labels():
         report.period_verdicts.append(time_of_day_verdict(history, route))
 
     report.repeat_cancellations = repeat_cancellations(history)
@@ -261,8 +293,9 @@ def build_historical_report(
     overall.reliability_score = compute_reliability(overall, min_sample_size=1).score
     report.overall = dict(overall.as_columns())
 
-    for destination in settings.destination_airports:
-        route = f"{settings.origin_airport}-{destination}"
+    labels = _airport_labels(session)
+    for origin, destination in settings.routes:
+        route = f"{origin}-{destination}"
         route_facts = [f for f in facts if f.route == route]
         block = compute_metrics(route_facts)
         block.reliability_score = compute_reliability(block, min_sample_size=1).score
@@ -271,7 +304,8 @@ def build_historical_report(
         payload.update(
             {
                 "route": route,
-                "destination_name": ROUTE_NAMES.get(destination, destination),
+                "destination_name": labels.get(destination, destination),
+                "route_name": _route_label(labels, origin, destination),
                 "best_period": verdict.best_period,
                 "worst_delay_period": verdict.worst_delay_period,
                 "worst_cancellation_period": verdict.worst_cancellation_period,

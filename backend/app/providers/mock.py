@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 
+from app.core.airports import timezone_for
 from app.core.config import settings
 from app.core.enums import DataQuality, FlightStatus, ProviderKind
 from app.core.logging_config import get_logger
@@ -36,20 +37,37 @@ from app.providers.normalization import compute_delay_minutes
 
 log = get_logger(__name__)
 
-#: Carriers that genuinely operate these routes, used so the synthetic board is
+#: Carriers that genuinely operate these routes, so the synthetic board is
 #: structurally realistic. The *statuses and times* below are invented.
-_SCHEDULE: tuple[tuple[str, str, str, str, int, int], ...] = (
-    # (flight_number, airline_iata, airline_name, destination, local_hour, minute)
-    ("TK872", "TK", "Turkish Airlines", "IKA", 5, 30),
-    ("TK874", "TK", "Turkish Airlines", "IKA", 14, 10),
-    ("TK878", "TK", "Turkish Airlines", "IKA", 19, 45),
-    ("W5113", "W5", "Mahan Air", "IKA", 8, 20),
-    ("IR721", "IR", "Iran Air", "IKA", 21, 15),
-    ("EP975", "EP", "Iran Aseman Airlines", "IKA", 23, 5),
-    ("TK886", "TK", "Turkish Airlines", "MHD", 7, 25),
-    ("TK888", "TK", "Turkish Airlines", "MHD", 18, 55),
-    ("W5117", "W5", "Mahan Air", "MHD", 11, 40),
+#:
+#: Keyed by origin as well as destination: keying on destination alone meant a
+#: return route asked for destinations {IST} and matched nothing, so the mock
+#: provider silently produced zero flights for it.
+_SCHEDULE: tuple[tuple[str, str, str, str, str, int, int], ...] = (
+    # (flight_number, airline_iata, airline_name, origin, destination, hour, minute)
+    ("TK872", "TK", "Turkish Airlines", "IST", "IKA", 5, 30),
+    ("TK874", "TK", "Turkish Airlines", "IST", "IKA", 14, 10),
+    ("TK878", "TK", "Turkish Airlines", "IST", "IKA", 19, 45),
+    ("W5113", "W5", "Mahan Air", "IST", "IKA", 8, 20),
+    ("IR721", "IR", "Iran Air", "IST", "IKA", 21, 15),
+    ("EP975", "EP", "Iran Aseman Airlines", "IST", "IKA", 23, 5),
+    ("TK886", "TK", "Turkish Airlines", "IST", "MHD", 7, 25),
+    ("TK888", "TK", "Turkish Airlines", "IST", "MHD", 18, 55),
+    ("W5117", "W5", "Mahan Air", "IST", "MHD", 11, 40),
+    # Return legs, so a route like IKA-IST is exercised too.
+    ("TK873", "TK", "Turkish Airlines", "IKA", "IST", 7, 40),
+    ("TK879", "TK", "Turkish Airlines", "IKA", "IST", 22, 30),
+    ("W5114", "W5", "Mahan Air", "IKA", "IST", 12, 15),
+    ("IR722", "IR", "Iran Air", "IKA", "IST", 16, 50),
+    ("TK887", "TK", "Turkish Airlines", "MHD", "IST", 9, 10),
 )
+
+#: Nominal block time per airport pair, in minutes. Symmetric, so a return leg
+#: does not silently fall through to a default.
+_BLOCK_MINUTES: dict[frozenset[str], int] = {
+    frozenset({"IST", "IKA"}): 210,
+    frozenset({"IST", "MHD"}): 240,
+}
 
 
 class MockProvider(FlightDataProvider):
@@ -90,27 +108,31 @@ class MockProvider(FlightDataProvider):
         )
 
         wanted = {d.upper() for d in destinations}
+        origin_code = origin.strip().upper()
         observed_at = utcnow()
         flights: list[NormalizedFlight] = []
 
-        start_day = to_local(window_start)
-        end_day = to_local(window_end)
+        # Departure hours are local to the origin airport, matching how a real
+        # timetable is published.
+        origin_tz = timezone_for(origin_code)
+        start_day = to_local(window_start, origin_tz)
+        end_day = to_local(window_end, origin_tz)
         assert start_day is not None and end_day is not None
 
         day = start_day.date()
         while day <= end_day.date():
-            for number, airline_iata, airline_name, dest, hour, minute in _SCHEDULE:
-                if dest not in wanted:
+            for number, airline_iata, airline_name, sched_origin, dest, hour, minute in _SCHEDULE:
+                if sched_origin != origin_code or dest not in wanted:
                     continue
                 local_dep = datetime.combine(
-                    day, datetime.min.time(), tzinfo=settings.tz
+                    day, datetime.min.time(), tzinfo=origin_tz
                 ).replace(hour=hour, minute=minute)
                 sched_dep = local_dep.astimezone(UTC)
                 if not window_start <= sched_dep < window_end:
                     continue
                 flights.append(
                     self._synthesise(
-                        number, airline_iata, airline_name, origin, dest,
+                        number, airline_iata, airline_name, origin_code, dest,
                         sched_dep, hour, observed_at,
                     )
                 )
@@ -144,7 +166,7 @@ class MockProvider(FlightDataProvider):
         cancel_chance = 12 if evening else 4
         cancelled = seed % 100 < cancel_chance
 
-        block_minutes = 210 if dest == "IKA" else 240
+        block_minutes = _BLOCK_MINUTES.get(frozenset({origin, dest}), 240)
         sched_arr = sched_dep + timedelta(minutes=block_minutes)
 
         if cancelled:

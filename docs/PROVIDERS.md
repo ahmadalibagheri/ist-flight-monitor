@@ -32,7 +32,7 @@ recorded as a **failed run** — the system never writes an empty board, because
 | **Aircraft** | model + registration | IATA type + registration | type + registration |
 | **Cost model** | per API unit | per request | per returned result |
 | **Free tier** | 600 units/month (RapidAPI Basic) | ~100 requests/month, **HTTP only** | trial credit, then billed |
-| **Calls per cycle (2 routes)** | 3–4 (12h window chunks) | 2 (one per route) | 2 (scheduled + departed) |
+| **Calls per cycle** | 1 per origin per 12h chunk | 1 per route pair | 2 per origin (scheduled + departed) |
 | **TLS on free tier** | yes | **no** | yes |
 
 ### Recommended setup
@@ -69,9 +69,28 @@ GET /flights/airports/iata/{code}/{fromLocal}/{toLocal}
   (`2026-09-06T08:15`), not UTC.
 - Times arrive as `{"utc": "2026-09-06 05:15Z", "local": "2026-09-06 08:15+03:00"}`. The
   UTC field is preferred; the local one is a fallback.
-- A single call returns the board for *all* destinations, so both monitored routes are
-  satisfied by one request. The response cache
+- A single call returns the board for *all* destinations **from one airport**, so every
+  route sharing an origin is satisfied by one request. The response cache
   (`PROVIDER_CACHE_TTL_SECONDS`) keeps it that way.
+- **Each additional origin is a separate call set.** `IST-IKA` and `IST-MHD` share the IST
+  board and cost nothing extra; adding `IKA-IST` means reading the IKA board too:
+
+  ```
+  calls per cycle = origins x ceil((LOOKBACK + LOOKAHEAD) / 12)
+  ```
+
+  | Routes | Origins | 24h window | Per day (2-hourly) | Per month |
+  |---|---|---|---|---|
+  | `IST-IKA,IST-MHD` | 1 | 2 calls | 24 | 720 |
+  | `+ IKA-IST` | 2 | 4 calls | 48 | 1,440 |
+  | `+ MHD-IST` | 3 | 6 calls | 72 | 2,160 |
+
+  The free tier is 600 units/month, so more than one origin needs the $5 Pro plan
+  (6,000 units) or a narrower window.
+- The window path segments are **local time at the airport being queried**, not the
+  monitor's operational timezone. Each origin's own zone is resolved in
+  `app/core/airports.py`; using one global zone shifts a Tehran-origin window by half an
+  hour and clips flights at both edges.
 
 **Getting a key**
 

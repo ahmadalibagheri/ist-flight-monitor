@@ -151,9 +151,32 @@ export interface RouteInfo {
   destination_iata: string;
   destination_name: string | null;
   destination_city: string | null;
+  /** Origin airport naming. Optional: older backends only described the destination. */
+  origin_name?: string | null;
+  origin_city?: string | null;
   total_flights: number;
   first_seen: string | null;
   last_seen: string | null;
+}
+
+/** `IST-IKA` → `IST → IKA`, the corridor notation used across the board. */
+export function routePair(route: string): string {
+  return route.replace("-", " → ");
+}
+
+/**
+ * Human label for one route.
+ *
+ * Routes are directional and a corridor can carry return legs, so a label must name
+ * *both* ends: `destination_city` alone is identical for IST-IKA and MHD-IKA, and on
+ * the return leg IKA-IST it names the wrong end. Both city names are therefore
+ * required, and the (always unique) IATA pair is the fallback.
+ */
+export function routeLabel(entry: RouteInfo): string {
+  const origin = entry.origin_city;
+  const destination = entry.destination_city;
+  if (origin && destination) return `${origin} → ${destination}`;
+  return routePair(entry.route);
 }
 
 export interface Airline {
@@ -204,6 +227,8 @@ export interface HourlyReport {
   routes: (Metrics & {
     route: string;
     destination_name: string;
+    /** Directional label, e.g. "TEHRAN -> ISTANBUL". Fall back to the IATA pair. */
+    route_name?: string | null;
     departed: number;
     scheduled_remaining: number;
   })[];

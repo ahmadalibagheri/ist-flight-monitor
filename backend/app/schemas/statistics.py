@@ -71,6 +71,9 @@ class FlightIssueOut(BaseModel):
 class RouteBlockOut(MetricsOut):
     route: str
     destination_name: str
+    route_name: str | None = Field(
+        None, description='Directional label, e.g. "TEHRAN -> ISTANBUL".'
+    )
     departed: int
     scheduled_remaining: int
 

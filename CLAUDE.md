@@ -45,6 +45,28 @@ in `providers/`, `services/` or `analytics/`.
    window-scoped sweep could never reach a flight that aged past the lookback — they sat
    at `BOARDING` for days, looking live.
 
+## Routes are directional
+
+`settings.routes` returns `(origin, destination)` pairs from `MONITORED_ROUTES`;
+`settings.origins` and `settings.destinations_by_origin` derive from it. Never enumerate
+routes from `origin_airport` + `destination_airports` — those are the legacy fallback and
+cannot express a return leg.
+
+Two consequences, both of which have already caused bugs:
+
+- **Fetch once per origin.** Providers serve one airport's departure board per request, so
+  the collector loops `destinations_by_origin`. Filtering against one global destination
+  set would also accept pairs nobody configured.
+- **The staleness sweep is scoped to origins that actually answered.** If one origin's
+  board fails, its flights have not gone missing — we simply did not look. Marking them
+  stale reports a provider outage as a schedule change.
+
+Provider requests needing an airport's local time must use
+`app/core/airports.py::timezone_for(iata)`, not `settings.tz`. AeroDataBox interprets its
+window as local time at the airport queried; Tehran is UTC+03:30 against Istanbul's
+UTC+03:00, so one global zone shifts the window half an hour and clips flights at both
+edges.
+
 ## Timezone contract
 
 - Store UTC (`TIMESTAMPTZ`). Report in `OPERATIONAL_TIMEZONE` (`Europe/Istanbul`).

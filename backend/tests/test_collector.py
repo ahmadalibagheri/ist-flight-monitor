@@ -352,6 +352,178 @@ class TestScheduleRetiming:
         assert flight.schedule_moved_minutes == 0
 
 
+class TestMultipleOrigins:
+    """Return legs mean more than one origin, and one board per origin."""
+
+    async def test_one_fetch_per_origin(self, db_session, collector, monkeypatch) -> None:
+        """Each provider serves a single airport's board, so origins cannot be batched."""
+        import app.services.collector as collector_module
+        from app.core.config import Settings
+
+        monkeypatch.setattr(
+            collector_module, "settings", Settings(monitored_routes="IST-IKA,IKA-IST")
+        )
+
+        asked: list[tuple[str, tuple[str, ...]]] = []
+
+        async def fake(session, origin, destinations, start, end):
+            asked.append((origin, tuple(destinations)))
+            flight = make_normalized(
+                flight_number=f"XX{len(asked)}",
+                origin_iata=origin,
+                destination_iata=destinations[0],
+            )
+            return (
+                ProviderResult(provider="test-provider", flights=[flight]),
+                ["test-provider"],
+                [],
+            )
+
+        collector.registry.fetch_with_failover = fake  # type: ignore[method-assign]
+        await collector.run_once(db_session, trigger="test")
+
+        assert asked == [("IST", ("IKA",)), ("IKA", ("IST",))]
+        stored = {(f.origin_iata, f.destination_iata) for f in db_session.scalars(select(Flight))}
+        assert stored == {("IST", "IKA"), ("IKA", "IST")}
+
+    async def test_outbound_and_return_are_separate_flights(
+        self, db_session, collector, monkeypatch
+    ) -> None:
+        """Same number, opposite direction, same day: two rows, not one."""
+        import app.services.collector as collector_module
+        from app.core.config import Settings
+
+        monkeypatch.setattr(
+            collector_module, "settings", Settings(monitored_routes="IST-IKA,IKA-IST")
+        )
+
+        async def fake(session, origin, destinations, start, end):
+            flight = make_normalized(
+                flight_number="TK878",  # deliberately the same designator
+                origin_iata=origin,
+                destination_iata=destinations[0],
+            )
+            return (
+                ProviderResult(provider="test-provider", flights=[flight]),
+                ["test-provider"],
+                [],
+            )
+
+        collector.registry.fetch_with_failover = fake  # type: ignore[method-assign]
+        await collector.run_once(db_session, trigger="test")
+
+        rows = db_session.scalars(select(Flight)).all()
+        assert len(rows) == 2
+        assert {(f.origin_iata, f.destination_iata) for f in rows} == {
+            ("IST", "IKA"),
+            ("IKA", "IST"),
+        }
+
+    async def test_a_failing_origin_does_not_stale_the_other(
+        self, db_session, collector, monkeypatch
+    ) -> None:
+        """The whole point of tracking which origins answered.
+
+        If the IKA board fails while IST succeeds, marking every IKA flight stale
+        would report a provider outage as though the flights had left the schedule.
+        """
+        import app.services.collector as collector_module
+        from app.core.config import Settings
+
+        monkeypatch.setattr(
+            collector_module, "settings", Settings(monitored_routes="IST-IKA,IKA-IST")
+        )
+        long_ago = datetime.now(UTC) - timedelta(days=2)
+
+        # Both origins answer on the first cycle.
+        async def both(session, origin, destinations, start, end):
+            flight = make_normalized(
+                flight_number=f"ZZ{origin}",
+                origin_iata=origin,
+                destination_iata=destinations[0],
+                scheduled_departure_utc=long_ago,
+                observed_at=long_ago,
+                status=FlightStatus.SCHEDULED,
+            )
+            return (
+                ProviderResult(provider="test-provider", flights=[flight]),
+                ["test-provider"],
+                [],
+            )
+
+        collector.registry.fetch_with_failover = both  # type: ignore[method-assign]
+        await collector.run_once(db_session, trigger="test")
+
+        # On the second cycle only IST answers; the IKA board is down.
+        async def ist_only(session, origin, destinations, start, end):
+            if origin == "IKA":
+                return None, ["test-provider"], ["board unavailable"]
+            return (
+                ProviderResult(provider="test-provider", flights=[]),
+                ["test-provider"],
+                [],
+            )
+
+        collector.registry.fetch_with_failover = ist_only  # type: ignore[method-assign]
+        await collector.run_once(db_session, trigger="test")
+
+        by_origin = {f.origin_iata: f for f in db_session.scalars(select(Flight))}
+        assert by_origin["IST"].data_quality is DataQuality.STALE, (
+            "IST was fetched and its flight was absent, so it is genuinely stale"
+        )
+        assert by_origin["IKA"].data_quality is not DataQuality.STALE, (
+            "the IKA board was never read; its flight has not gone missing"
+        )
+
+    async def test_a_partial_cycle_still_succeeds_and_says_so(
+        self, db_session, collector, monkeypatch
+    ) -> None:
+        import app.services.collector as collector_module
+        from app.core.config import Settings
+
+        monkeypatch.setattr(
+            collector_module, "settings", Settings(monitored_routes="IST-IKA,IKA-IST")
+        )
+
+        async def ist_only(session, origin, destinations, start, end):
+            if origin == "IKA":
+                return None, ["test-provider"], ["board unavailable"]
+            return (
+                ProviderResult(
+                    provider="test-provider",
+                    flights=[make_normalized(origin_iata="IST", destination_iata="IKA")],
+                ),
+                ["test-provider"],
+                [],
+            )
+
+        collector.registry.fetch_with_failover = ist_only  # type: ignore[method-assign]
+        summary = await collector.run_once(db_session, trigger="test")
+
+        assert summary.success is True, "data from the origin that answered is worth keeping"
+        assert summary.flights_seen == 1
+        assert summary.error is not None and "IKA" in summary.error
+
+    async def test_every_origin_failing_is_a_failed_run(
+        self, db_session, collector, monkeypatch
+    ) -> None:
+        import app.services.collector as collector_module
+        from app.core.config import Settings
+
+        monkeypatch.setattr(
+            collector_module, "settings", Settings(monitored_routes="IST-IKA,IKA-IST")
+        )
+
+        async def nothing(session, origin, destinations, start, end):
+            return None, ["test-provider"], ["board unavailable"]
+
+        collector.registry.fetch_with_failover = nothing  # type: ignore[method-assign]
+        summary = await collector.run_once(db_session, trigger="test")
+
+        assert summary.success is False
+        assert db_session.scalar(select(func.count()).select_from(Flight)) == 0
+
+
 class TestRawPayloadRetention:
     """Provider responses cannot be re-fetched, so they are kept verbatim."""
 

@@ -123,6 +123,10 @@ class RouteOut(BaseModel):
     route: str
     origin_iata: str
     destination_iata: str
+    # The origin is named as well as the destination: on a return leg the
+    # destination alone does not tell a reader which direction they are looking at.
+    origin_name: str | None = None
+    origin_city: str | None = None
     destination_name: str | None = None
     destination_city: str | None = None
     first_seen: date | None = None

@@ -39,10 +39,17 @@ const mono = localFont({
   fallback: ["ui-monospace", "monospace"],
 });
 
+/*
+ * Static server metadata: it is rendered before any API call, so it cannot name the
+ * routes. The wording therefore has to hold for whatever corridor a deployment is
+ * configured to collect — the live corridor is shown in the masthead instead.
+ */
 export const metadata: Metadata = {
+  // Kept as-is: this is the product name (see `app_name` in the backend settings),
+  // not a route list.
   title: "IST Flight Reliability Monitor",
   description:
-    "Delay and cancellation analytics for direct flights from Istanbul (IST) to Tehran (IKA) and Mashhad (MHD).",
+    "Delay and cancellation analytics for the direct flight routes this monitor collects.",
 };
 
 export const dynamic = "force-dynamic";

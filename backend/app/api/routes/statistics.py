@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.analytics.aggregator import summarise
@@ -19,6 +19,7 @@ from app.analytics.insights import (
 )
 from app.analytics.queries import facts_for_local_dates
 from app.api.deps import DbSession, Window
+from app.api.routes.flights import ROUTE_QUERY_DESCRIPTION, split_route
 from app.core.config import settings
 from app.core.enums import StatScope
 from app.models import HourlyStatistic
@@ -33,7 +34,23 @@ from app.schemas.statistics import (
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
 
-RouteQ = Annotated[str | None, Query(description='e.g. "IST-IKA" or "IKA".')]
+
+def _route_filter(
+    route: Annotated[str | None, Query(description=ROUTE_QUERY_DESCRIPTION)] = None,
+) -> str | None:
+    """Validate the ``route`` query parameter every statistics endpoint accepts.
+
+    The value is handed straight to the analytics layer, which has no way to report
+    a bad filter to the client, so the ORIGIN-DESTINATION form is enforced once here
+    rather than in each endpoint body.
+    """
+    if route is None:
+        return None
+    origin, destination = split_route(route)
+    return f"{origin}-{destination}"
+
+
+RouteQ = Annotated[str | None, Depends(_route_filter)]
 AirlineQ = Annotated[str | None, Query(description="Airline IATA code.")]
 
 
@@ -203,7 +220,7 @@ def time_of_day(
     """
     start, end, _ = window
     facts = facts_for_local_dates(session, start, end)
-    routes = [route] if route else [f"{o}-{d}" for o, d in settings.routes]
+    routes = [route] if route else settings.route_labels()
     return [
         TimeOfDayOut(**time_of_day_verdict(facts, r).as_dict())  # type: ignore[arg-type]
         for r in routes
@@ -336,5 +353,5 @@ def trends(
     route: RouteQ = None,
 ) -> list[TrendOut]:
     """Compares the last ``days`` days against the ``days`` before them."""
-    routes = [route] if route else [f"{o}-{d}" for o, d in settings.routes]
+    routes = [route] if route else settings.route_labels()
     return [TrendOut(**trend(session, days, route=r)) for r in routes]  # type: ignore[arg-type]

@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     operational_timezone: str = "Europe/Istanbul"
 
     # --------------------------------------------------------------- routes
+    #: Explicit directional route pairs, e.g. ``IST-IKA,IST-MHD,IKA-IST``.
+    #:
+    #: Direction matters: IST-IKA and IKA-IST are separate routes with separate
+    #: statistics. Each distinct *origin* costs its own provider call set, because
+    #: the underlying APIs serve one airport's departure board per request - see
+    #: docs/PROVIDERS.md before adding one.
+    #:
+    #: Left empty, routes are derived from ``origin_airport`` + ``destination_airports``
+    #: so existing configurations keep working.
+    monitored_routes: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    #: Legacy single-origin form. Still honoured when ``monitored_routes`` is empty.
     origin_airport: str = "IST"
     destination_airports: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["IKA", "MHD"]
@@ -161,6 +173,7 @@ class Settings(BaseSettings):
     @field_validator(
         "cors_origins",
         "destination_airports",
+        "monitored_routes",
         "provider_chain",
         "delay_buckets_minutes",
         "telegram_alert_delay_minutes",
@@ -211,6 +224,21 @@ class Settings(BaseSettings):
     def _upper_destinations(cls, value: list[str]) -> list[str]:
         return [item.strip().upper() for item in value]
 
+    @field_validator("monitored_routes")
+    @classmethod
+    def _valid_routes(cls, value: list[str]) -> list[str]:
+        normalised: list[str] = []
+        for entry in value:
+            origin, destination = _parse_route(entry)
+            if origin == destination:
+                raise ValueError(
+                    f"Route {entry!r} has the same origin and destination."
+                )
+            pair = f"{origin}-{destination}"
+            if pair not in normalised:
+                normalised.append(pair)
+        return normalised
+
     @field_validator("operational_timezone")
     @classmethod
     def _valid_timezone(cls, value: str) -> str:
@@ -247,12 +275,65 @@ class Settings(BaseSettings):
 
     @property
     def routes(self) -> list[tuple[str, str]]:
+        """Monitored routes as ``(origin, destination)`` pairs, in configured order.
+
+        Direction is significant throughout the system: ``IST-IKA`` and ``IKA-IST``
+        are distinct routes with distinct statistics, and nothing collapses them.
+        """
+        if self.monitored_routes:
+            return [_parse_route(entry) for entry in self.monitored_routes]
         return [(self.origin_airport, dest) for dest in self.destination_airports]
+
+    @property
+    def origins(self) -> list[str]:
+        """Distinct origin airports, in first-seen order.
+
+        One provider call set is needed per origin, so this is also the multiplier
+        on API quota.
+        """
+        seen: dict[str, None] = {}
+        for origin, _ in self.routes:
+            seen.setdefault(origin, None)
+        return list(seen)
+
+    @property
+    def destinations_by_origin(self) -> dict[str, list[str]]:
+        """Which destinations to keep from each origin's departure board.
+
+        Filtering per origin rather than against one global destination set is what
+        stops an unconfigured pair being collected: with routes IST-IKA and IKA-IST,
+        a global set of {IST, IKA} would also accept IST-IST and, on a third
+        airport's board, anything heading to either.
+        """
+        grouped: dict[str, list[str]] = {}
+        for origin, destination in self.routes:
+            grouped.setdefault(origin, [])
+            if destination not in grouped[origin]:
+                grouped[origin].append(destination)
+        return grouped
+
+    def route_labels(self) -> list[str]:
+        """Routes as ``"IST-IKA"`` strings, for logs and API payloads."""
+        return [f"{o}-{d}" for o, d in self.routes]
 
     @property
     def sync_database_url(self) -> str:
         """psycopg3 URL used by both SQLAlchemy and Alembic."""
         return self.database_url
+
+
+def _parse_route(entry: str) -> tuple[str, str]:
+    """Parse ``"IST-IKA"`` into ``("IST", "IKA")``."""
+    origin, separator, destination = entry.strip().upper().partition("-")
+    if not separator or not origin or not destination:
+        raise ValueError(
+            f"Route {entry!r} must be written as ORIGIN-DESTINATION, e.g. 'IST-IKA'."
+        )
+    if len(origin) != 3 or len(destination) != 3:
+        raise ValueError(
+            f"Route {entry!r} must use three-letter IATA codes, e.g. 'IKA-IST'."
+        )
+    return origin, destination
 
 
 @lru_cache(maxsize=1)

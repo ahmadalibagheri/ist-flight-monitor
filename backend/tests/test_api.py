@@ -105,6 +105,37 @@ class TestFlights:
         assert body["items"]
         assert {f["destination_iata"] for f in body["items"]} == {"IKA"}
 
+    def test_a_bare_route_code_is_refused_not_guessed(self, client, seeded) -> None:
+        """Once an airport is both an origin and a destination, `?route=IKA` is ambiguous.
+
+        It used to be resolved as "the configured origin -> IKA", which silently
+        returns the wrong direction the moment a return leg is monitored.
+        """
+        response = client.get("/api/v1/flights?route=IKA")
+        assert response.status_code == 400
+        assert "ORIGIN-DESTINATION" in str(response.json()["detail"])
+
+    def test_a_full_route_pair_is_accepted(self, client, seeded) -> None:
+        response = client.get("/api/v1/flights?route=IST-IKA&limit=100")
+        assert response.status_code == 200
+        for flight in response.json()["items"]:
+            assert (flight["origin_iata"], flight["destination_iata"]) == ("IST", "IKA")
+
+    def test_statistics_endpoints_reject_a_bare_code_too(self, client, seeded) -> None:
+        for path in ("/api/v1/statistics", "/api/v1/statistics/time-of-day"):
+            assert client.get(f"{path}?route=MHD&window=30d").status_code == 400, path
+
+    def test_config_reports_the_monitored_routes(self, client) -> None:
+        body = client.get("/api/v1/reports/config").json()
+        assert body["routes"] == ["IST-IKA", "IST-MHD"]
+
+    def test_routes_endpoint_names_both_ends(self, client, seeded) -> None:
+        """A return leg cannot be labelled from the destination alone."""
+        for entry in client.get("/api/v1/routes").json():
+            assert "origin_name" in entry
+            assert "origin_city" in entry
+            assert "destination_name" in entry
+
     def test_named_windows_are_not_silently_ignored(self, client, seeded) -> None:
         """`/flights` filters on explicit dates only.
 
