@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # A flight not seen in a provider response for this long is *not* assumed
     # cancelled - it is marked stale. Missing data is never a cancellation.
     stale_after_minutes: int = 180
+    # Import the bundled observation history when the database is empty, so a fresh
+    # checkout can compute analytics instead of showing an empty dashboard. Only ever
+    # applies to an empty database, and is ignored when ENVIRONMENT=production.
+    seed_on_empty: bool = True
+
     # Persist each provider response verbatim alongside the parsed observation.
     # Historical responses cannot be re-fetched, so anything not stored is lost
     # permanently; ~1 KB per observation buys full recoverability.

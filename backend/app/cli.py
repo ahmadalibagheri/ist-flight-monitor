@@ -44,6 +44,7 @@ from app.reports.render import (
 )
 from app.scheduler.jobs import _recent_flights
 from app.services.collector import FlightCollector
+from app.services.seed import import_seed, rebuild_statistics
 
 log = get_logger("cli")
 
@@ -142,6 +143,23 @@ async def _report(kind: str, send: bool, days: int) -> int:
     return EXIT_OK
 
 
+# ------------------------------------------------------------------------ seed
+def _seed(*, force: bool, aggregate: bool) -> int:
+    """Import the bundled history, then rebuild the statistics cache over it."""
+    with session_scope() as session:
+        result = import_seed(session, force=force)
+        payload: dict[str, Any] = result.as_dict()
+        if result.applied and aggregate:
+            payload["statistics_rows"] = rebuild_statistics(session)
+
+    if not result.applied:
+        log.info("cli.seed_skipped", reason=result.reason)
+    print(json.dumps(payload, indent=2, default=str))
+    # A skip is the correct outcome on every run after the first, so it is not a
+    # failure - only a genuinely broken dataset is.
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------- status
 def _status() -> int:
     """Operational snapshot, suitable for a cron health check or a quick look."""
@@ -218,6 +236,20 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--send", action="store_true", help="Deliver to Telegram.")
     report.add_argument("--days", type=int, default=30, help="Window for the daily report.")
 
+    seed = sub.add_parser(
+        "seed", help="Import the bundled observation history into an empty database."
+    )
+    seed.add_argument(
+        "--force",
+        action="store_true",
+        help="Import even if flights already exist. Existing rows are never overwritten.",
+    )
+    seed.add_argument(
+        "--no-aggregate",
+        action="store_true",
+        help="Skip recomputing statistics after importing.",
+    )
+
     sub.add_parser("status", help="Operational snapshot; exits non-zero if collection has stalled.")
     return parser
 
@@ -236,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         return _aggregate(args.days, args.start, args.end)
     if args.command == "report":
         return asyncio.run(_report(args.kind, args.send, args.days))
+    if args.command == "seed":
+        return _seed(force=args.force, aggregate=not args.no_aggregate)
     if args.command == "status":
         return _status()
     return EXIT_MISCONFIGURED

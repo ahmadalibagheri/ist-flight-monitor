@@ -22,6 +22,12 @@ cp .env.example .env
 docker compose up -d
 ```
 
+The first start imports a bundled snapshot of **real** observations (5 days,
+49 flights, 295 observations), so the dashboard has analytics to show before you have
+collected anything yourself. It only ever applies to an empty database, is skipped when
+`ENVIRONMENT=production`, and can be disabled with `SEED_ON_EMPTY=false`. Configure a
+provider key to continue collecting from there.
+
 Then open:
 
 | | |
@@ -337,6 +343,14 @@ Interactive docs at `/docs`. Highlights:
 | `POST /api/v1/admin/collect` | Run a collection cycle now. |
 | `POST /api/v1/admin/aggregate` | Rebuild materialised statistics. |
 | `POST /api/v1/admin/telegram/test` | Verify Telegram delivery. |
+
+Seed dataset commands:
+
+```bash
+docker compose run --rm --no-deps api python -m app.cli seed        # import if empty
+docker compose run --rm --no-deps api python -m app.cli seed --force  # import anyway
+./scripts/export-seed.sh                                            # re-export from your own history
+```
 
 All windows accept `?window=today|7d|30d|90d|mtd|all` or explicit
 `?start_date=&end_date=`, plus `route`, `airline` and `flight_number` filters.

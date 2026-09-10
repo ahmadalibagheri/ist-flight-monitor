@@ -41,9 +41,13 @@ services:
       SCHEDULER_ENABLED: "false"
     ports:
       - "${API_PORT:-8000}:8000"
-    # Migrations run here, once, before the API starts serving.
+    # Migrations run here, once, before the API starts serving. The seed step then
+    # imports the bundled observation history, but only into an empty database and
+    # never when ENVIRONMENT=production - so a fresh checkout has analytics to show,
+    # while a real deployment is untouched. `seed` exits 0 when it skips.
     command: >
       sh -c "alembic upgrade head &&
+             python -m app.cli seed &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=5).status==200 else 1)\""]
