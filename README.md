@@ -217,7 +217,13 @@ Three rules are enforced throughout and covered by tests:
 
 1. **Missing data is never a cancellation.** A flight that disappears from a provider's
    board is marked `data_quality = STALE`; its status is left untouched.
-2. **An unknown delay is never zero.** If the provider gave no usable timing, the flight
+2. **An unmeasurable population scores `null`, not a low number.** A route the provider
+   reports without any usable timing can only score its cancellation component, which
+   lands the weighted total near 30 and reads as *poor reliability* rather than
+   *unmeasured*. Reliability is `null` when nothing has been observed, nothing has
+   completed, or nothing carried timing — but a population with cancellations is still
+   scored, since a cancellation is real without needing a clock.
+3. **An unknown delay is never zero.** If the provider gave no usable timing, the flight
    is counted in `unknown_flights` and excluded from delay and on-time rates — counting
    it as on-time would be a lie. The dashboard renders it as `—`, never `0`.
 3. **A re-timed flight cannot pass as punctual.** Airlines move schedules, and

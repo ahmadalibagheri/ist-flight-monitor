@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.analytics.metrics import MetricBlock, compute_metrics
 from app.analytics.reliability import compute_reliability
 from app.core.config import Settings
+from app.core.enums import FlightStatus
 
 
 def _block(**kwargs) -> MetricBlock:
@@ -152,6 +153,34 @@ class TestNoDataIsNotZero:
         facts.append(make_fact(delay=5, status=FlightStatus.DEPARTED))
         result = compute_reliability(compute_metrics(facts), min_sample_size=1)
         assert result.score is not None
+
+    def test_flights_without_timing_score_none_not_thirty(self, make_fact) -> None:
+        """Observed live on a newly-enabled route: 2 flights, no timings, "30/100".
+
+        Only the cancellation component can be scored, so the weighted total lands
+        near 30 and reads as poor reliability. A route the provider reports without
+        timings must not look worse than one that is genuinely late.
+        """
+        from app.core.enums import FlightStatus
+
+        facts = [
+            make_fact(delay=None, status=FlightStatus.DEPARTED),
+            make_fact(delay=None, status=FlightStatus.UNKNOWN),
+        ]
+        metrics = compute_metrics(facts)
+        assert metrics.measurable_flights == 0
+
+        result = compute_reliability(metrics, min_sample_size=1)
+        assert result.score is None
+        assert result.is_ranked is False
+        assert "usable timing" in (result.warning or "")
+
+    def test_cancellations_alone_are_still_measurable(self, make_fact) -> None:
+        """A cancellation needs no timing to be a real outcome, so it is scored."""
+        facts = [make_fact(cancelled=True) for _ in range(3)]
+        facts += [make_fact(delay=None, status=FlightStatus.DEPARTED) for _ in range(2)]
+        result = compute_reliability(compute_metrics(facts), min_sample_size=1)
+        assert result.score is not None, "cancellations are knowable without timings"
 
     def test_all_cancelled_earns_a_real_low_score(self, make_fact) -> None:
         facts = [make_fact(cancelled=True) for _ in range(30)]

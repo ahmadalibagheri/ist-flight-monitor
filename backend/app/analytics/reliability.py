@@ -153,6 +153,26 @@ def compute_reliability(
             ),
         )
 
+    if metrics.measurable_flights == 0 and metrics.cancelled_flights == 0:
+        # Flights exist and some may have completed, but not one of them carried
+        # usable timing. Three of the four components are then unknowable, score 0,
+        # and the weighted total lands around 30 - which reads as "poor reliability"
+        # when the truth is "we could not measure it". A route the provider reports
+        # without timings must not look worse than one that is genuinely late.
+        #
+        # Cancellations are the exception: they need no timing to be real, so a
+        # population with cancellations is still measured below.
+        return ReliabilityScore(
+            score=None,
+            components=components,
+            sample_size=metrics.total_flights,
+            is_ranked=False,
+            warning=(
+                f"{metrics.total_flights} flight(s) observed but none carried usable "
+                "timing data; reliability cannot be computed."
+            ),
+        )
+
     raw_score = round(sum(c.contribution for c in components), 1)
     score = max(0.0, min(100.0, raw_score))
 

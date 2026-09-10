@@ -54,6 +54,11 @@ def _isolate_dotenv(monkeypatch):
         "telegram_bot_token",
         "telegram_chat_id",
         "provider_chain",
+        # Route configuration leaks the same way credentials do: enabling a route
+        # locally made every test that asserts the route set fail.
+        "monitored_routes",
+        "origin_airport",
+        "destination_airports",
         "allow_mock_provider",
         "environment",
         "collection_interval_minutes",
