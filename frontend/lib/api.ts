@@ -172,6 +172,45 @@ export function routePair(route: string): string {
  * the return leg IKA-IST it names the wrong end. Both city names are therefore
  * required, and the (always unique) IATA pair is the fallback.
  */
+/**
+ * Split routes by direction relative to the corridor's hub.
+ *
+ * Outbound and return legs must not sit in one flat list. A tab reading
+ * "Tehran → Istanbul" beside "Istanbul → Tehran" is distinguished only by a small
+ * arrow, and mistaking one for the other means reading the wrong direction's
+ * cancellation rate — the exact question this monitor exists to answer.
+ *
+ * The hub is whichever airport appears in the most legs, with origins weighted so a
+ * single unpaired route resolves to its own origin.
+ */
+export function classifyRoutes(routes: RouteInfo[]): {
+  hub: string | null;
+  outbound: RouteInfo[];
+  returning: RouteInfo[];
+} {
+  if (routes.length === 0) return { hub: null, outbound: [], returning: [] };
+
+  const weight = new Map<string, number>();
+  const bump = (code: string, points: number) =>
+    weight.set(code, (weight.get(code) ?? 0) + points);
+  for (const entry of routes) {
+    bump(entry.origin_iata, 3);
+    bump(entry.destination_iata, 2);
+  }
+  const hub = [...weight.keys()].reduce((best, code) =>
+    (weight.get(code) ?? 0) > (weight.get(best) ?? 0) ? code : best,
+  );
+
+  return {
+    hub,
+    outbound: routes.filter((entry) => entry.origin_iata === hub),
+    // Anything not leaving the hub is a return leg. A route touching the hub at
+    // neither end would land here too, which is the safer default: it gets shown
+    // with an explicit direction rather than silently filed as outbound.
+    returning: routes.filter((entry) => entry.origin_iata !== hub),
+  };
+}
+
 export function routeLabel(entry: RouteInfo): string {
   const origin = entry.origin_city;
   const destination = entry.destination_city;

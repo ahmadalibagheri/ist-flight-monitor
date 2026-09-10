@@ -8,6 +8,7 @@ import {
   DelaysSection,
   FlightsSection,
   OverviewSection,
+  ReturnsSection,
   RouteSection,
   TimeOfDaySection,
   TrendsSection,
@@ -20,6 +21,7 @@ import {
   type RouteInfo,
   endpoints,
   fetcher,
+  classifyRoutes,
   routeLabel,
   routePair,
 } from "@/lib/api";
@@ -41,9 +43,14 @@ const ANALYSIS_TABS = [
  * a route code can then never collide with one of the fixed tab ids.
  */
 const ROUTE_TAB = "route:";
+const RETURNS_TAB = { id: "returns", label: "Return flights" } as const;
 
 type RouteTabId = `${typeof ROUTE_TAB}${string}`;
-type TabId = typeof OVERVIEW_TAB.id | (typeof ANALYSIS_TABS)[number]["id"] | RouteTabId;
+type TabId =
+  | typeof OVERVIEW_TAB.id
+  | typeof RETURNS_TAB.id
+  | (typeof ANALYSIS_TABS)[number]["id"]
+  | RouteTabId;
 
 interface Tab {
   id: TabId;
@@ -222,24 +229,48 @@ export default function Dashboard() {
     fetcher<Airline[]>,
   );
 
+  // Outbound legs get a tab each; every return leg lives on one page of its own.
+  // Mixing the two directions in a flat list makes them distinguishable only by a
+  // small arrow, and reading the wrong one means reading the wrong direction's
+  // cancellation rate.
+  const { hub, outbound, returning } = useMemo(
+    () => classifyRoutes(routes ?? []),
+    [routes],
+  );
+
   const routeTabs: Tab[] = useMemo(
     () =>
-      (routes ?? []).map((entry) => ({
+      outbound.map((entry) => ({
         id: `${ROUTE_TAB}${entry.route}` as RouteTabId,
         label: routeLabel(entry),
       })),
-    [routes],
+    [outbound],
   );
-  const tabs: Tab[] = [OVERVIEW_TAB, ...routeTabs, ...ANALYSIS_TABS];
+  const tabs: Tab[] = [
+    OVERVIEW_TAB,
+    ...routeTabs,
+    ...(returning.length > 0 ? [RETURNS_TAB] : []),
+    ...ANALYSIS_TABS,
+  ];
   const routeTab = routeTabs.find((entry) => entry.id === tab);
+  const hubLabel =
+    returning.find((entry) => entry.destination_city)?.destination_city ?? hub ?? "the hub";
   const corridor = useMemo(() => describeCorridor(routes ?? []), [routes]);
 
   // A route can stop being collected between page loads; don't strand the user on a
   // tab that no longer has a route behind it.
+  const returningCount = returning.length;
   useEffect(() => {
-    if (!routes || !tab.startsWith(ROUTE_TAB)) return;
-    if (!routes.some((entry) => `${ROUTE_TAB}${entry.route}` === tab)) setTab("overview");
-  }, [routes, tab]);
+    if (!routes) return;
+    if (tab === RETURNS_TAB.id && returningCount === 0) {
+      setTab(OVERVIEW_TAB.id);
+      return;
+    }
+    if (!tab.startsWith(ROUTE_TAB)) return;
+    if (!routes.some((entry) => `${ROUTE_TAB}${entry.route}` === tab)) {
+      setTab(OVERVIEW_TAB.id);
+    }
+  }, [routes, tab, returningCount]);
 
   const filters: Filters = useMemo(
     () => ({
@@ -397,6 +428,9 @@ export default function Dashboard() {
       <ProviderBanner />
 
       {tab === "overview" && <OverviewSection filters={filters} />}
+      {tab === RETURNS_TAB.id && (
+        <ReturnsSection filters={filters} routes={returning} hubLabel={hubLabel} />
+      )}
       {routeTab && (
         <RouteSection
           filters={filters}

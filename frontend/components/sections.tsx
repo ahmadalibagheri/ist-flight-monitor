@@ -34,12 +34,13 @@ import {
   type HourlyReport,
   type Page,
   type Ranked,
-  type RepeatCancellation,
   type RouteInfo,
+  type RepeatCancellation,
   type Summary,
   type TimeOfDay,
   type Trend,
   endpoints,
+  routeLabel,
   fetcher,
   routePair,
 } from "@/lib/api";
@@ -237,10 +238,13 @@ export function RouteSection({
   filters,
   route,
   title,
+  bare,
 }: {
   filters: Filters;
   route: string;
   title: string;
+  /** Suppress the built-in heading when the caller has already labelled the route. */
+  bare?: boolean;
 }) {
   const scoped: Filters = { ...filters, route };
   const summary = useApi<Summary>(endpoints.statistics(scoped));
@@ -250,11 +254,13 @@ export function RouteSection({
 
   return (
     <>
-      <div className="heading">
-        {title && title !== routePair(route)
-          ? `${title} — ${routePair(route)}`
-          : routePair(route)}
-      </div>
+      {!bare && (
+        <div className="heading">
+          {title && title !== routePair(route)
+            ? `${title} — ${routePair(route)}`
+            : routePair(route)}
+        </div>
+      )}
       <Guard result={summary}>
         {(data) => (
           <>
@@ -292,6 +298,55 @@ export function RouteSection({
           return <TimeOfDayPanel verdict={verdict} />;
         }}
       </Guard>
+    </>
+  );
+}
+
+/* --------------------------------------------------- Return legs (own page) */
+/**
+ * Every leg heading back to the hub, on one page of its own.
+ *
+ * These deliberately do not share the outbound tabs. In a flat list the only thing
+ * separating "Tehran → Istanbul" from "Istanbul → Tehran" is a small arrow, and
+ * reading the wrong one means reading the wrong direction's cancellation rate. The
+ * banner and the per-route heading both restate the direction, because someone
+ * arriving here from a bookmark has no other context.
+ */
+export function ReturnsSection({
+  filters,
+  routes,
+  hubLabel,
+}: {
+  filters: Filters;
+  routes: RouteInfo[];
+  hubLabel: string;
+}) {
+  if (routes.length === 0) {
+    return (
+      <Vacant>
+        No return legs are being collected. Add one to <code>MONITORED_ROUTES</code>,
+        for example <code>IKA-IST</code>.
+      </Vacant>
+    );
+  }
+
+  return (
+    <>
+      <Message tone="info" title={`Flights back into ${hubLabel}`}>
+        The opposite direction to the outbound tabs, counted separately. A carrier&apos;s
+        punctuality leaving {hubLabel} says little about its return, so these figures
+        share nothing with the outbound ones — including the reliability score.
+      </Message>
+
+      {routes.map((entry) => (
+        <div key={entry.route}>
+          <div className="heading">
+            {routeLabel(entry)}{" "}
+            <span className="chip">return · {routePair(entry.route)}</span>
+          </div>
+          <RouteSection filters={filters} route={entry.route} title={routeLabel(entry)} bare />
+        </div>
+      ))}
     </>
   );
 }

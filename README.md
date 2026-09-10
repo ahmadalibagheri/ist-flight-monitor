@@ -188,6 +188,18 @@ adding `IKA-IST` doubles API usage. See [docs/PROVIDERS.md](docs/PROVIDERS.md).
 The older `ORIGIN_AIRPORT` / `DESTINATION_AIRPORTS` pair still works when
 `MONITORED_ROUTES` is empty.
 
+### Return legs get their own page
+
+Outbound routes each get a tab; **every return leg is grouped onto a single "Return
+flights" page**. They are deliberately not mixed into the outbound tabs — in a flat list
+"Tehran → Istanbul" is distinguished from "Istanbul → Tehran" only by a small arrow, and
+mistaking one for the other means reading the wrong direction's cancellation rate, which
+is the exact question this monitor exists to answer.
+
+The page restates the direction in its heading, tags each route `return · IKA → IST`, and
+opens with a banner explaining the figures share nothing with the outbound ones. The tab
+only appears when a return leg is actually configured, so it is never an empty page.
+
 ---
 
 ## How to read the numbers
