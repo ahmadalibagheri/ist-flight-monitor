@@ -1,0 +1,8 @@
+-r requirements.txt
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-cov==6.0.0
+ruff==0.9.2
+mypy==1.14.1
+types-python-dateutil==2.9.0.20241206
+respx==0.22.0

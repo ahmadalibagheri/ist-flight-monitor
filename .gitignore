@@ -1,0 +1,42 @@
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# --- node / next ---
+node_modules/
+.next/
+out/
+npm-debug.log*
+.eslintcache
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# --- local machine overrides ---
+# Compose override files are per-machine by convention. Committing one would ship a
+# local choice (here: worker disabled because cron owns the schedule) to everyone,
+# leaving a fresh clone with no scheduler at all.
+docker-compose.override.yml
+
+# --- runtime ---
+logs/
+*.log
+
+# --- build artefacts ---
+*.tsbuildinfo

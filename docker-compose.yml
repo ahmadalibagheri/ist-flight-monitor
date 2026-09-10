@@ -1,0 +1,97 @@
+name: ist-flight-monitor
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: flightmon-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flightmon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-flightmon}
+      # Analytics group by local time constantly; keep the server in UTC and let
+      # the application convert, so a container restart can never shift history.
+      PGTZ: UTC
+      TZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flightmon} -d ${POSTGRES_DB:-flightmon}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flightmon-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flightmon}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-flightmon}
+      # The API container serves HTTP only; the worker owns the schedule.
+      SCHEDULER_ENABLED: "false"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    # Migrations run here, once, before the API starts serving.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=5).status==200 else 1)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flightmon-worker
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flightmon}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-flightmon}
+      SCHEDULER_ENABLED: "true"
+    # Exactly one worker runs the scheduler; it waits on the API's health check so
+    # the schema is already migrated by the time jobs start firing.
+    command: ["python", "-m", "app.scheduler.runner"]
+    # The image's HTTP health check belongs to the API. This container serves no
+    # HTTP, so inheriting it would mark a perfectly healthy worker unhealthy.
+    # Liveness here is the process itself (restart: unless-stopped); real
+    # visibility comes from GET /api/v1/reports/collection-runs and GET /providers.
+    healthcheck:
+      disable: true
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: flightmon-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Read at request time (see frontend/app/layout.tsx), so changing this and
+      # restarting is enough - no image rebuild needed.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  pgdata:
+    driver: local

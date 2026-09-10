@@ -1,0 +1,50 @@
+# ============================================================================
+# IST Flight Reliability Monitor - crontab
+#
+# EDIT THE PATHS BELOW FIRST - cron needs absolute paths and does not expand ~.
+#   sed -i "s|/path/to/ist-flight-monitor|$(pwd)|g" scripts/crontab.example
+#
+# Install:   crontab scripts/crontab.example
+# Inspect:   crontab -l
+# Remove:    crontab -r
+#
+# BEFORE INSTALLING: turn off the in-process scheduler, or every cycle runs
+# twice and burns double the provider quota:
+#
+#     docker compose stop worker
+#     # and set SCHEDULER_ENABLED=false in .env
+#
+# Cron entries are interpreted in CRON_TZ below, which is set to the project's
+# operational timezone so "23:00 daily report" means 23:00 in Istanbul.
+# ============================================================================
+
+CRON_TZ=Europe/Istanbul
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Cron mails stdout/stderr here. Leave blank to disable mail.
+MAILTO=""
+
+# --- collection every 2 hours -----------------------------------------------
+# Runs at :07 rather than :00 to stay clear of the top-of-hour rush on the
+# provider's side. Each run collects, aggregates and dispatches alerts.
+#
+# Every 2h with a 24h window costs the same quota as hourly with a 12h window
+# (24 units/day) but covers every departure rather than a 12-hour slice. Flights
+# are still observed ~12 times before departure, which is ample for delay tracking.
+7 */2 * * * /path/to/ist-flight-monitor/scripts/collect.sh
+
+# --- daily historical summary to Telegram -----------------------------------
+0 23 * * * /path/to/ist-flight-monitor/scripts/daily-report.sh
+
+# --- stall detection --------------------------------------------------------
+# Exits non-zero (and so mails MAILTO, if set) when the newest collection run
+# is older than two intervals or the last run failed.
+35 * * * * /path/to/ist-flight-monitor/scripts/healthcheck.sh >/dev/null
+
+# ============================================================================
+# Quota note for the AeroDataBox free tier (600 units/month):
+#   calls per cycle = ceil((LOOKBACK + LOOKAHEAD) / 12)
+# With LOOKBACK=3 / LOOKAHEAD=9 that is 1 call/cycle = 24/day = ~25 days.
+# To collect less often, change the schedule above to e.g.
+#   7 */2 * * *   (every 2 hours -> 12/day -> comfortably within the free tier)
+# ============================================================================

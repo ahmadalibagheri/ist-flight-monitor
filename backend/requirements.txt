@@ -1,0 +1,24 @@
+# --- web / api ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+
+# --- database ---
+SQLAlchemy==2.0.36
+alembic==1.14.1
+psycopg[binary,pool]==3.2.3
+
+# --- http / providers ---
+httpx==0.28.1
+tenacity==9.0.0
+
+# --- scheduling ---
+APScheduler==3.11.0
+
+# --- observability ---
+structlog==24.4.0
+
+# --- misc ---
+python-dateutil==2.9.0.post0
+tzdata==2024.2

@@ -1,0 +1,362 @@
+/* ===========================================================================
+   IST Flight Reliability Monitor
+
+   The design idea: a departure board, not a card deck. Flights lead, statistics
+   follow. Structure comes from hairline rules and column alignment - there are
+   no drop shadows in this interface.
+
+   The second idea, which the product is built around: a missing reading must
+   look missing. Unknown values render as a dashed slot (.slot), never as 0 and
+   never as an empty cell.
+
+   Committed to a dark ground deliberately: this is an operations screen, and
+   departure boards are dark.
+   =========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  --ground: #0e1621;   /* deep navy-slate; blue, not tinted black */
+  --panel:  #16212e;
+  --raised: #1c2937;
+  --rule:   #24384c;
+  --rule-soft: #1b2836;
+
+  --text:   #e8edf2;
+  --text-2: #a9bccd;
+  --text-3: #6f869b;
+
+  --clear:  #4fd1a5;   /* on time / departed */
+  --caution:#f0a93b;   /* delayed - aviation caution amber */
+  --stop:   #ff5c6c;   /* cancelled */
+  --track:  #6ea8fe;   /* neutral data series */
+  --violet: #a78bfa;   /* diverted */
+
+  --pad: 20px;
+  --field: 1.5px;      /* hairline weight */
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--font-ui), ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers align in columns everywhere they appear. */
+.mono, td.num, th.num, .strip time, .reading .figure, .slot {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+a { color: var(--track); }
+
+.shell { max-width: 1360px; margin: 0 auto; padding: 0 var(--pad) 80px; }
+
+/* ------------------------------------------------------------------ masthead */
+.masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 26px 0 14px;
+  border-bottom: var(--field) solid var(--rule);
+}
+.corridor {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+.corridor .arrow { color: var(--text-3); font-weight: 400; }
+.corridor .dest { color: var(--text-2); font-weight: 500; }
+.masthead .strapline {
+  color: var(--text-3);
+  font-size: 14px;
+  margin-top: 3px;
+  max-width: 62ch;
+}
+.board-clock {
+  text-align: right;
+  font-family: var(--font-mono), monospace;
+}
+.board-clock .time { font-size: 27px; font-weight: 500; letter-spacing: 0.01em; }
+.board-clock .zone { font-size: 12px; color: var(--text-3); }
+
+.feeds { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; justify-content: flex-end; }
+.feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-2);
+  border: var(--field) solid var(--rule);
+  padding: 3px 10px;
+}
+.feed .lamp { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
+.feed.live .lamp { background: var(--clear); }
+.feed.degraded .lamp { background: var(--caution); }
+.feed.down .lamp { background: var(--stop); }
+
+/* ---------------------------------------------------------------------- tabs */
+.sections {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  border-bottom: var(--field) solid var(--rule);
+  scrollbar-width: thin;
+}
+.sections button {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 15px;
+  padding: 11px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-bottom: -1.5px;
+}
+.sections button:hover { color: var(--text); }
+.sections button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--clear); }
+.sections button:focus-visible { outline: 2px solid var(--track); outline-offset: -2px; }
+
+/* ------------------------------------------------------------------- filters */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-end;
+  padding: 14px 0 18px;
+  border-bottom: var(--field) solid var(--rule-soft);
+}
+.filters .f { display: flex; flex-direction: column; gap: 5px; }
+.filters label { font-size: 13px; color: var(--text-3); }
+.filters select, .filters input {
+  background: var(--panel);
+  border: var(--field) solid var(--rule);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 9px;
+  min-width: 138px;
+}
+.filters input { font-family: var(--font-mono), monospace; }
+.filters select:focus-visible, .filters input:focus-visible {
+  outline: 2px solid var(--track); outline-offset: 1px;
+}
+.linkish {
+  background: none; border: none; color: var(--text-3);
+  font: inherit; font-size: 14px; cursor: pointer; padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.linkish:hover { color: var(--text); border-bottom-color: var(--text-3); }
+
+/* ------------------------------------------------------------ flight strips */
+/* The hero. Fixed field positions so a column can be scanned vertically. */
+.board { border-top: var(--field) solid var(--rule); }
+/* Shared geometry. `.strip.dated` overrides only the column layout, so every
+   spacing rule must live here or a dated board would be the only one with padding. */
+.strip {
+  display: grid;
+  grid-template-columns: 4px 96px 132px 76px 232px 1fr;
+  grid-template-areas: "edge ident carrier clock late state";
+  align-items: center;
+  gap: 16px;
+  padding: 11px 14px 11px 0;
+  border-bottom: var(--field) solid var(--rule-soft);
+}
+
+/* Multi-day boards carry the date; today's board does not need it. */
+.strip.dated {
+  grid-template-columns: 4px 92px 122px 96px 66px 208px 1fr;
+  grid-template-areas: "edge ident carrier day clock late state";
+}
+.strip .edge { grid-area: edge; align-self: stretch; background: var(--text-3); }
+.strip .ident { grid-area: ident; }
+.strip .carrier { grid-area: carrier; }
+.strip time { grid-area: clock; }
+.strip .day {
+  font-family: var(--font-mono), monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.strip .lateness { grid-area: late; }
+.strip .day { grid-area: day; }
+.strip .state { grid-area: state; }
+.strip.is-clear   .edge { background: var(--clear); }
+.strip.is-caution .edge { background: var(--caution); }
+.strip.is-stop    .edge { background: var(--stop); }
+.strip.is-void    .edge { background: repeating-linear-gradient(
+  180deg, var(--text-3) 0 3px, transparent 3px 7px); }
+
+.strip .ident { font-family: var(--font-mono), monospace; font-size: 16px; font-weight: 500; }
+.strip .carrier { color: var(--text-2); font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
+.strip time { font-size: 16px; color: var(--text); }
+.strip .leg { color: var(--text-3); font-size: 13px; }
+.strip .state { font-size: 14px; text-align: right; }
+.strip.is-void .ident { color: var(--text-2); }
+.strip.is-clear   .state { color: var(--clear); }
+.strip.is-caution .state { color: var(--caution); }
+.strip.is-stop    .state { color: var(--stop); }
+.strip.is-void    .state { color: var(--text-3); }
+
+/* Delay bar: grows rightward from the scheduled time. */
+.lateness { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.lateness .bar { height: 7px; background: var(--caution); min-width: 2px; }
+.lateness .amount { font-family: var(--font-mono), monospace; font-size: 14px; color: var(--caution); }
+.lateness .ontime { font-size: 14px; color: var(--text-3); }
+/* A schedule that moved is a different fact from a delay, so it gets its own mark
+   rather than being folded into the amber bar. */
+.lateness .retimed {
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  color: var(--violet);
+  border: 1px solid color-mix(in srgb, var(--violet) 45%, transparent);
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+/* A missing reading is drawn, not blanked - the product's central claim. */
+.slot {
+  display: inline-block;
+  min-width: 2.6em;
+  color: var(--text-3);
+  border-bottom: 1px dashed var(--text-3);
+  opacity: 0.7;
+}
+.slot::before { content: "no reading"; font-size: 11px; visibility: hidden; }
+.slot.compact { min-width: 1.8em; }
+
+/* ------------------------------------------------------- instrument cluster */
+.cluster {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  border: var(--field) solid var(--rule);
+  margin: 20px 0 26px;
+}
+.reading {
+  padding: 16px 18px;
+  border-right: var(--field) solid var(--rule);
+  border-bottom: var(--field) solid var(--rule);
+}
+.reading .name { font-size: 14px; color: var(--text-3); }
+.reading .figure { font-size: 30px; font-weight: 500; letter-spacing: -0.01em; margin-top: 3px; }
+.reading { display: flex; flex-direction: column; }
+.reading .qualifier {
+  font-size: 13px; color: var(--text-3); margin-top: auto; padding-top: 8px;
+  max-width: 30ch;
+}
+.reading.clear .figure { color: var(--clear); }
+.reading.caution .figure { color: var(--caution); }
+.reading.stop .figure { color: var(--stop); }
+.reading .figure .slot { font-size: 26px; min-width: 1.6em; }
+
+/* --------------------------------------------------------------- panels */
+.panel { border: var(--field) solid var(--rule); margin-bottom: 20px; }
+.panel > header {
+  padding: 12px 16px;
+  border-bottom: var(--field) solid var(--rule);
+  display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+}
+.panel h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.panel .note { font-size: 13px; color: var(--text-3); margin: 0; }
+.panel > .body { padding: 16px; }
+.panel > .body.flush { padding: 0; }
+
+.split { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); }
+.heading { font-size: 15px; font-weight: 600; margin: 26px 0 12px; color: var(--text-2); }
+
+/* --------------------------------------------------------------- tables */
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: var(--field) solid var(--rule-soft); white-space: nowrap; }
+th { color: var(--text-3); font-weight: 500; font-size: 13px; }
+td.num, th.num { text-align: right; }
+tbody tr:hover { background: var(--raised); }
+
+.chip {
+  display: inline-block; font-size: 13px; color: var(--text-3);
+  border: var(--field) solid var(--rule); padding: 1px 8px;
+}
+.chip.warn { color: var(--caution); border-color: color-mix(in srgb, var(--caution) 45%, transparent); }
+
+/* --------------------------------------------------------------- messages */
+.message { border: var(--field) solid var(--rule); border-left-width: 3px; padding: 13px 16px; margin-bottom: 16px; }
+.message h3 { margin: 0 0 3px; font-size: 15px; font-weight: 600; }
+.message p { margin: 0; color: var(--text-2); font-size: 14px; }
+.message.stop { border-left-color: var(--stop); }
+.message.caution { border-left-color: var(--caution); }
+.message.info { border-left-color: var(--track); }
+.message code {
+  font-family: var(--font-mono), monospace; font-size: 13px;
+  background: var(--raised); padding: 1px 5px;
+}
+
+.legend { display: flex; gap: 18px; align-items: center; font-size: 13px; color: var(--text-3); }
+.legend .slot { min-width: 2.2em; }
+
+.vacant { color: var(--text-3); font-size: 14px; padding: 26px 16px; }
+.waiting { height: 240px; border: var(--field) dashed var(--rule); display: grid; place-items: center; color: var(--text-3); font-size: 14px; }
+
+pre.printout {
+  font-family: var(--font-mono), monospace;
+  font-size: 12.5px; line-height: 1.5; overflow-x: auto; margin: 0; color: var(--text-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+@media (max-width: 760px) {
+  .shell { padding-inline: 14px; }
+  .corridor { font-size: 22px; }
+  .masthead { padding-top: 18px; }
+  .board-clock { text-align: left; }
+  .feeds { justify-content: flex-start; }
+
+  /* Two rows per strip: identity and clock on top, outcome beneath. The named
+     areas mean hiding the carrier cannot shuffle the remaining cells. */
+  .strip {
+    grid-template-columns: 4px 1fr auto;
+    grid-template-areas:
+      "edge ident clock"
+      "edge state late";
+    row-gap: 4px;
+    column-gap: 12px;
+    padding: 10px 12px 10px 0;
+  }
+  .strip .carrier { display: none; }
+  /* Two rows, not three: identity and date read together on top, outcome below. */
+  .strip.dated {
+    grid-template-columns: 4px auto 1fr auto;
+    grid-template-areas:
+      "edge ident day   clock"
+      "edge state state late";
+  }
+  .strip.dated .day { font-size: 13px; }
+  .strip .state { text-align: left; font-size: 13px; }
+  .strip .lateness { justify-content: flex-end; }
+  .strip .lateness .bar { max-width: 90px; }
+
+  .legend { display: none; }          /* the tooltip still explains the slot */
+  .panel > header { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .filters { gap: 12px; }
+  .filters .f { flex: 1 1 44%; }
+  .filters select, .filters input { min-width: 0; width: 100%; }
+  .reading .figure { font-size: 25px; }
+}
