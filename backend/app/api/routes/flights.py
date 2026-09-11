@@ -23,6 +23,7 @@ def _serialise(flight: Flight) -> FlightOut:
     out = FlightOut.model_validate(flight)
     local = to_local(flight.scheduled_departure_utc)
     out.scheduled_departure_local = local.strftime("%Y-%m-%d %H:%M") if local else None
+    out.outcome_unresolved = flight.outcome_unresolved
     out.schedule_moved_minutes = flight.schedule_moved_minutes
     out.total_displacement_minutes = flight.total_displacement_minutes
     return out

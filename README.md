@@ -223,7 +223,14 @@ Three rules are enforced throughout and covered by tests:
    *unmeasured*. Reliability is `null` when nothing has been observed, nothing has
    completed, or nothing carried timing — but a population with cancellations is still
    scored, since a cancellation is real without needing a clock.
-3. **An unknown delay is never zero.** If the provider gave no usable timing, the flight
+3. **A status long past its departure is not a live status.** `outcome_unresolved` flags a
+   flight whose expected departure is more than two hours past while its status is still
+   non-terminal — "Boarding" sixteen hours after the aircraft was due to leave is the last
+   thing reported, not a live state, and the board shows *No outcome* rather than the stale
+   word. This is independent of `data_quality == STALE`: staleness measures how long since
+   the *provider* mentioned a flight and scales with the collection interval, whereas this
+   measures the *flight's own timeline* and does not.
+4. **An unknown delay is never zero.** If the provider gave no usable timing, the flight
    is counted in `unknown_flights` and excluded from delay and on-time rates — counting
    it as on-time would be a lie. The dashboard renders it as `—`, never `0`.
 3. **A re-timed flight cannot pass as punctual.** Airlines move schedules, and
@@ -234,12 +241,12 @@ Three rules are enforced throughout and covered by tests:
    `schedule_moved_minutes` and `total_displacement_minutes`; the board marks such
    flights `retimed +5h`. `delay_minutes` keeps its industry meaning — displacement is
    reported alongside it, not folded into it.
-4. **Thin samples are never ranked.** An airline needs `MIN_SAMPLE_SIZE_AIRLINE`
+5. **Thin samples are never ranked.** An airline needs `MIN_SAMPLE_SIZE_AIRLINE`
    (default 20) flights, a flight number 10, a time period 10. Below that, entries are
    returned with `is_ranked: false` and sorted last. Comparative claims ("best time to
    fly") additionally require at least two qualifying periods — with only one, the same
    window would be named both best and worst.
-5. **But a repeated cancellation is always reported.** The sample-size rule cuts both
+6. **But a repeated cancellation is always reported.** The sample-size rule cuts both
    ways, and was hiding the most actionable fact in the data: a flight cancelled every
    day it was scheduled sits below the ranking minimum and appears nowhere. Three
    cancellations out of three is not a small sample to discount — it is a pattern a

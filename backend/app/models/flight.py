@@ -14,7 +14,7 @@ Storage model
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
@@ -40,6 +40,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.core.enums import DataQuality, EventType, FlightStatus
+from app.core.timeutil import utcnow
 
 StatusEnum = SAEnum(FlightStatus, name="flight_status", native_enum=True, validate_strings=True)
 EventEnum = SAEnum(EventType, name="flight_event_type", native_enum=True, validate_strings=True)
@@ -167,6 +168,42 @@ class Flight(Base):
     @property
     def route(self) -> str:
         return f"{self.origin_iata}-{self.destination_iata}"
+
+    #: How long after its expected departure a non-terminal status stops being
+    #: credible. Boarding legitimately continues up to departure and a little past
+    #: it, so a short grace avoids flagging a flight that is mid-departure.
+    UNRESOLVED_AFTER_MINUTES = 120
+
+    @property
+    def expected_departure_utc(self) -> datetime:
+        """The latest time the flight was expected to leave.
+
+        A status must be judged against this rather than the original schedule: a
+        flight delayed two hours is not overdue at its original time. The provider's
+        own revised estimate is preferred over ``scheduled + delay_minutes`` because
+        it is the value the delay was derived *from*, so it stays correct even when
+        the derived figure is missing.
+        """
+        if self.estimated_departure_utc is not None:
+            return max(self.estimated_departure_utc, self.scheduled_departure_utc)
+        if self.delay_minutes is not None and self.delay_minutes > 0:
+            return self.scheduled_departure_utc + timedelta(minutes=self.delay_minutes)
+        return self.scheduled_departure_utc
+
+    @property
+    def outcome_unresolved(self) -> bool:
+        """True when the departure is long past but no outcome ever arrived.
+
+        Distinct from :attr:`DataQuality.STALE`, and both can hold at once. Staleness
+        is about *our polling* - how long since the provider mentioned this flight.
+        This is about *the flight's own timeline*: a status of BOARDING sixteen hours
+        after the aircraft was due to leave is not a live status, whatever the polling
+        interval is, and a board that presents it as current is misleading.
+        """
+        if self.status.is_departure_settled:
+            return False
+        overdue = utcnow() - self.expected_departure_utc
+        return overdue > timedelta(minutes=self.UNRESOLVED_AFTER_MINUTES)
 
     @property
     def schedule_moved_minutes(self) -> int | None:

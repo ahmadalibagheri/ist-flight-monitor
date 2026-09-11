@@ -159,7 +159,11 @@ const BAR_CEILING_MINUTES = 120;
  * status, so the row itself stays quiet.
  */
 export function Strip({ flight, showDate }: { flight: Flight; showDate?: boolean }) {
-  const tone = STATE_TONE[flight.status] ?? "is-void";
+  // An unresolved flight loses its confident status colour: a green edge beside a
+  // sixteen-hour-old "Boarding" is the same false reassurance as the word itself.
+  const tone = flight.outcome_unresolved
+    ? "is-void"
+    : (STATE_TONE[flight.status] ?? "is-void");
   const clock = flight.scheduled_departure_local?.slice(11) ?? "--:--";
   const late = flight.delay_minutes;
   // A flight the airline pushed later reads as "on time" against its new schedule.
@@ -169,6 +173,10 @@ export function Strip({ flight, showDate }: { flight: Flight; showDate?: boolean
   // The provider stopped reporting this flight while it was still mid-transition.
   // Its status is the last thing we were told, not necessarily what happened.
   const stale = flight.data_quality === "STALE";
+  // The departure is long past but no outcome arrived, so the status is the last
+  // thing reported rather than a live state. "Boarding" sixteen hours after the
+  // aircraft was due to leave must not read as though it is boarding now.
+  const unresolved = flight.outcome_unresolved;
 
   return (
     <div className={showDate ? `strip dated ${tone}` : `strip ${tone}`}>
@@ -203,15 +211,28 @@ export function Strip({ flight, showDate }: { flight: Flight; showDate?: boolean
         )}
       </span>
       <span className="state">
-        {stale && (
+        {unresolved ? (
           <span
-            className="lastheard"
-            title="No longer reported by the provider. This is the last status we were told, not a confirmed outcome."
+            className="unresolved"
+            title={`Departure was due well before now and no outcome was ever reported. Last known status: ${
+              STATE_WORD[flight.status] ?? flight.status
+            }.`}
           >
-            last heard{" "}
+            No outcome
           </span>
+        ) : (
+          <>
+            {stale && (
+              <span
+                className="lastheard"
+                title="No longer reported by the provider. This is the last status we were told, not a confirmed outcome."
+              >
+                last heard{" "}
+              </span>
+            )}
+            {STATE_WORD[flight.status] ?? flight.status}
+          </>
         )}
-        {STATE_WORD[flight.status] ?? flight.status}
         <span className="leg"> · {flight.destination_iata}</span>
       </span>
     </div>

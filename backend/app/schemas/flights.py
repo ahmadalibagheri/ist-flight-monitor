@@ -54,6 +54,15 @@ class FlightOut(ORMModel):
     first_scheduled_departure_utc: datetime | None = Field(
         None, description="The departure time first advertised, before any re-timing."
     )
+    outcome_unresolved: bool = Field(
+        False,
+        description=(
+            "The departure is long past but no outcome ever arrived, so `status` is "
+            "the last thing reported rather than a live state. Independent of "
+            "`data_quality == STALE`, which is about polling rather than the "
+            "flight's own timeline."
+        ),
+    )
     schedule_moved_minutes: int | None = Field(
         None,
         description=(

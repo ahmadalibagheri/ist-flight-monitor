@@ -119,6 +119,7 @@ export interface Flight {
   scheduled_departure_utc: string;
   scheduled_departure_local: string | null;
   first_scheduled_departure_utc: string | null;
+  outcome_unresolved: boolean;
   schedule_moved_minutes: number | null;
   total_displacement_minutes: number | null;
   actual_departure_utc: string | null;

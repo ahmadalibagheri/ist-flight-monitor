@@ -365,6 +365,108 @@ class TestScheduleRetiming:
         assert flight.schedule_moved_minutes == 0
 
 
+class TestUnresolvedOutcome:
+    """A status long past its departure is not a live status.
+
+    Observed live: two flights read "Boarding" sixteen hours after they were due to
+    leave. Staleness had not fired because that measures *polling* gaps, and the
+    threshold scales with the collection interval. This measures the flight's own
+    timeline instead, so it is independent of how often we poll.
+    """
+
+    async def test_a_long_overdue_boarding_flight_is_unresolved(
+        self, db_session, collector
+    ) -> None:
+        overdue = datetime.now(UTC) - timedelta(hours=16)
+        await run_cycle(
+            collector,
+            db_session,
+            StubProvider(
+                [
+                    [
+                        make_normalized(
+                            scheduled_departure_utc=overdue,
+                            observed_at=overdue,
+                            status=FlightStatus.BOARDING,
+                            delay_minutes=0,
+                        )
+                    ]
+                ]
+            ),
+        )
+        flight = db_session.scalar(select(Flight))
+        assert flight is not None
+        assert flight.outcome_unresolved is True
+        # The status itself is untouched - it is still the last thing we were told.
+        assert flight.status is FlightStatus.BOARDING
+
+    async def test_a_departed_flight_is_never_unresolved(
+        self, db_session, collector
+    ) -> None:
+        overdue = datetime.now(UTC) - timedelta(days=2)
+        await run_cycle(
+            collector,
+            db_session,
+            StubProvider(
+                [
+                    [
+                        make_normalized(
+                            scheduled_departure_utc=overdue,
+                            observed_at=overdue,
+                            actual_departure_utc=overdue,
+                            status=FlightStatus.DEPARTED,
+                        )
+                    ]
+                ]
+            ),
+        )
+        flight = db_session.scalar(select(Flight))
+        assert flight is not None
+        assert flight.outcome_unresolved is False
+
+    async def test_a_flight_still_to_come_is_not_unresolved(
+        self, db_session, collector
+    ) -> None:
+        soon = datetime.now(UTC) + timedelta(hours=3)
+        await run_cycle(
+            collector,
+            db_session,
+            StubProvider(
+                [[make_normalized(scheduled_departure_utc=soon, status=FlightStatus.SCHEDULED)]]
+            ),
+        )
+        flight = db_session.scalar(select(Flight))
+        assert flight is not None
+        assert flight.outcome_unresolved is False
+
+    async def test_the_grace_is_measured_from_the_delayed_time(
+        self, db_session, collector
+    ) -> None:
+        """A flight delayed two hours is not overdue at its original time."""
+        scheduled = datetime.now(UTC) - timedelta(hours=3)
+        await run_cycle(
+            collector,
+            db_session,
+            StubProvider(
+                [
+                    [
+                        make_normalized(
+                            scheduled_departure_utc=scheduled,
+                            estimated_departure_utc=scheduled + timedelta(minutes=170),
+                            delay_minutes=170,
+                            observed_at=datetime.now(UTC),
+                            status=FlightStatus.DELAYED,
+                        )
+                    ]
+                ]
+            ),
+        )
+        flight = db_session.scalar(select(Flight))
+        assert flight is not None
+        # Expected departure is ~10 minutes ago, well inside the grace period.
+        assert flight.outcome_unresolved is False
+
+
 class TestMultipleOrigins:
     """Return legs mean more than one origin, and one board per origin."""
 
