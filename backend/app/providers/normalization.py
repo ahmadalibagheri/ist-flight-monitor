@@ -15,6 +15,7 @@ Two rules are non-negotiable and enforced here:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from app.core.enums import DataQuality, FlightStatus
@@ -250,19 +251,33 @@ def assess_quality(
 
 
 def normalize_flight_number(value: str | None) -> str | None:
-    """Strip spaces and upper-case a flight designator: ``"TK 878"`` -> ``"TK878"``.
+    """Normalise a flight designator: ``"TK 878"`` -> ``"TK878"``.
 
-    Also drops a leading zero in the numeric part (``"TK0878"`` -> ``"TK878"``) so
-    the same leg reported by two providers resolves to one identity.
+    Drops a leading zero in the numeric part (``"TK0878"`` -> ``"TK878"``) so the same
+    leg reported by two providers resolves to one identity, and preserves a trailing
+    section letter, which is part of the designator rather than noise.
+
+    Position matters, which an earlier character-class approach ignored: it collected
+    *every* letter into the prefix, so the real designator ``"B9 9701A"`` became
+    ``"BA99701"`` - hoisting the section suffix into the airline code and implying
+    British Airways operated an Iran Airtour flight. The pattern below anchors the
+    digits and lets only a single trailing letter follow them.
     """
     if not value:
         return None
     compact = "".join(value.split()).upper()
     if not compact:
         return None
-    prefix = "".join(ch for ch in compact if ch.isalpha())
-    digits = "".join(ch for ch in compact if ch.isdigit())
-    suffix = compact[len(prefix) + len(digits):] if compact.startswith(prefix) else ""
-    if not digits:
+
+    # Lazy prefix, then the numeric part, then at most one section letter. The lazy
+    # prefix makes the *last* digit run the flight number, which is what handles
+    # carrier codes that themselves contain a digit ("B9", "9W").
+    match = re.fullmatch(r"(?P<prefix>.*?)(?P<digits>\d+)(?P<suffix>[A-Z]?)", compact)
+    if match is None:
+        # No digits at all - not a designator we can normalise, so pass it through
+        # rather than mangling it.
         return compact
-    return f"{prefix}{digits.lstrip('0') or '0'}{suffix}"
+
+    prefix = match.group("prefix")
+    digits = match.group("digits").lstrip("0") or "0"
+    return f"{prefix}{digits}{match.group('suffix')}"

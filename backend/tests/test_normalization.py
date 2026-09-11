@@ -123,10 +123,43 @@ class TestDelayComputation:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("TK 878", "TK878"), ("TK0878", "TK878"), ("w5 113", "W5113"), (None, None), ("", None)],
+    [
+        ("TK 878", "TK878"),
+        ("TK0878", "TK878"),
+        ("w5 113", "W5113"),
+        (None, None),
+        ("", None),
+        # A carrier code containing a digit: the flight number is the *last* digit run.
+        ("B9 9701", "B99701"),
+        ("9W 123", "9W123"),
+        # Three-letter ICAO designators.
+        ("IRZ 8257", "IRZ8257"),
+        ("THY878", "THY878"),
+    ],
 )
 def test_flight_number_normalisation(raw: str | None, expected: str | None) -> None:
     assert normalize_flight_number(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("B9 9701A", "B99701A"), ("TK878A", "TK878A"), ("W5 113B", "W5113B")],
+)
+def test_a_section_suffix_stays_at_the_end(raw: str, expected: str) -> None:
+    """Observed live: "B9 9701A" became "BA99701".
+
+    Collecting every letter into the prefix hoisted the section suffix into the
+    airline code, turning an Iran Airtour flight into one that appears to be
+    operated by British Airways. The suffix is part of the designator and belongs
+    after the number.
+    """
+    result = normalize_flight_number(raw)
+    assert result == expected
+    assert not result.startswith("BA"), "the section letter leaked into the carrier code"
+
+
+def test_a_designator_without_digits_is_passed_through_not_mangled() -> None:
+    assert normalize_flight_number("FERRY") == "FERRY"
 
 
 def test_quality_flags_impossible_delays() -> None:
